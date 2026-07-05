@@ -2,7 +2,7 @@
  
 ## Pre-processing
 
-The sequences from Illumina were pre-processed by removing the primers and then processed using the DADA2 pipeline ([DADA2_pipeline.Rmd](./DADA2_pipeline.Rmd)). The resulting object from this processing is dada2multithreads.Rdata (7z compressed, to decompress execute "7z x archive.7z.001").
+The sequences from Illumina were pre-processed by removing the primers and then processed using the DADA2 pipeline ([DADA2_pipeline.Rmd](./DADA2_pipeline.Rmd)). The resulting object from this processing is dada2multithreads.Rdata and can be found in the Releases section of this repository.
 
 ## Contents
 
