@@ -1,0 +1,443 @@
+---
+title: "Script capítulo Coalescencia"
+author: "Ruben Chaboy"
+date: 
+output: html_document
+---
+<style>
+hr {
+  border: 0;
+  height: 8px;        
+  background: #000;   
+  margin: 20px 0;     
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+---
+
+## Loading of the libraries and data 
+
+Here we load the libraries we will use in the study. The data generated from sequence processing following the standard workflow of the DADA2 package are loaded. These data contain the table of ASV abundances per sample, as well as their taxonomic assignment. 
+
+
+```{r}
+knitr::opts_knit$set(root.dir = getwd())
+suppressMessages(suppressWarnings({
+datos <- "dada2multithreads.RData"
+suppressPackageStartupMessages({
+library(dada2)
+library(ggplot2)
+library(here)
+library(phyloseq)
+library(microbiome)
+library(dplyr)
+library(writexl)
+library(readxl)
+library(openxlsx)
+library(gridExtra)
+library(patchwork)
+library(Biostrings)
+library(tidyr)
+library(tibble)
+library(vegan)
+library(scales)
+library(car)})
+library(emmeans)
+library(officer)
+library(flextable)
+library(patchwork)
+library(broom)
+library(pheatmap)
+library(picante)
+library(reshape2)
+library(ppcor)
+library(gtsummary)
+library(stringr)
+library(readr)
+library(eulerr)
+library(rlang)
+library(gtools)
+library(ragg)
+library(magick)
+library(igraph)
+library(ggraph)
+library(tidygraph)
+theme_set(theme_bw())
+load(here("data",datos)) })) 
+
+dir.create("test")
+dir.create("graficos")
+dir.create("graficos/individual")
+dir.create("graficos/parejas")
+
+out_graf <- "graficos"
+out_graf_1 <- "graficos/individual"
+out_graf_2 <- "graficos/parejas"
+
+if (!dir.exists(out_graf_1)) dir.create(out_graf_1, recursive = TRUE)
+if (!dir.exists(out_graf_2)) dir.create(out_graf_2, recursive = TRUE)
+
+```
+
+## Data preparation
+  
+1. All experimental data were imported from an Excel file.
+2. A phyloseq object was created.
+
+```{r}
+
+samdf <- read_excel("metadata_Coales.xlsx")
+samdf <- as.data.frame(samdf)
+
+
+rownames(samdf) <- samdf$Nombre
+
+ps <- phyloseq(otu_table(seqtab_nochim, taxa_are_rows = FALSE), 
+               sample_data(samdf), 
+               tax_table(tax))
+
+```
+
+### Eliminación de controles y muestras no representativas {#controles}
+
+Samples that correspond to controls, DNA extraction controls (Cext), and negative PCR controls (Cneg) are eliminated. Samples containing community B are also eliminated. Finally, samples from dead or small plants are eliminated.
+
+```{r}
+
+ps_nocontrol <- subset_samples(
+  ps,
+  !(Tipo %in% c("Cext", "Cneg")) &
+  !grepl("B", Componentes) &
+   !Observaciones %in% c("muerta", "pequeña")
+)
+
+```
+
+### Removal of non-bacterial sequences
+
+Sequences corresponding to mitochondria, chloroplasts, and eukaryotes were removed. This was done because the selected primers may also amplify the 16S region of these organelles.
+
+
+```{r}
+
+print("Inicial:")
+ps_nocontrol
+inicial<-sum(otu_table(ps_nocontrol))
+print ("Aqui vamos a quitar cloroplastos, mitocondrias y eucariotas")
+ps_nocontrol_filtrado<- subset_taxa(ps_nocontrol, Class!="Chloroplast")
+sin_cloroplastos<-sum(otu_table(ps_nocontrol_filtrado))
+ps_nocontrol_filtrado <- subset_taxa(ps_nocontrol_filtrado, Family!="Mitochondria")
+sin_mitocondrias<-sum(otu_table(ps_nocontrol_filtrado))
+ps_nocontrol_filtrado <- subset_taxa(ps_nocontrol_filtrado, Kingdom!="Eukaryota")
+sin_eucariotas<-sum(otu_table(ps_nocontrol_filtrado))
+valores<-c(inicial,sin_cloroplastos,sin_mitocondrias,sin_eucariotas)
+print("inicial,sin_cloroplastos,sin_mitocondrias,sin_eucariotas")
+print(valores)
+print(paste0("Total inicial= ",inicial))
+print(paste0("  quitando cloroplastos= ",sin_cloroplastos))
+print(paste0("  quitando cloroplastos y mitocondrias= ",sin_mitocondrias))
+print(paste0("  quitando cloroplastos, mitocondrias y eucariotas= ",sin_eucariotas))
+print("Filtrado:")
+ps_nocontrol_filtrado
+
+suppressMessages(summarize_phyloseq(ps_nocontrol_filtrado))
+
+```
+
+
+### Correction of NAs 
+
+Samples with MPN values recorded as NA, either because the corresponding bacteria did not grow in those samples or because the values were below the detection limit (<110000 MPN/mL), were converted to the detection-limit value of 220000 MPN per plant.
+
+1. The text values ‘NA’ are replaced with missing values, which are coded as NA, but not in text format as they appear in the original data sheet. 
+2. The MPN column was converted to numeric type.
+The NA (missing) values in the MPN column are replaced with 220000.
+4. All values below 110000 in the MPN column were converted to 220000.
+
+For dry weight, samples with NA values (because the aboveground part did not grow sufficiently) were assigned a value of 0 g.
+
+1. The text values ‘NA’ are replaced with NA (missing) values.
+2. The Weight column was converted to numeric type.
+3.  The NA (missing) values in the Weight column are replaced with 0.
+
+
+```{r}
+
+sample_data(ps_nocontrol_filtrado)$MPN[sample_data(ps_nocontrol_filtrado)$MPN == "NA"] <- NA
+sample_data(ps_nocontrol_filtrado)$MPN <- as.numeric(sample_data(ps_nocontrol_filtrado)$MPN)
+sample_data(ps_nocontrol_filtrado)$MPN[is.na(sample_data(ps_nocontrol_filtrado)$MPN)] <- 220000
+sample_data(ps_nocontrol_filtrado)$MPN[sample_data(ps_nocontrol_filtrado)$MPN < 220000] <- 110000
+
+sample_data(ps_nocontrol_filtrado)$Peso_Seco[sample_data(ps_nocontrol_filtrado)$Peso_Seco == "NA"] <- NA
+sample_data(ps_nocontrol_filtrado)$Peso_Seco <- as.numeric(sample_data(ps_nocontrol_filtrado)$Peso_Seco)
+sample_data(ps_nocontrol_filtrado)$Peso_Seco[is.na(sample_data(ps_nocontrol_filtrado)$Peso_Seco)] <- 0
+
+```
+
+## Subsampling 
+
+The number of sequences per sample was visualized to determine the subsampling depth. A fixed seed of 134 was used.
+
+```{r}
+
+sort(sample_sums(ps_nocontrol_filtrado), decreasing = TRUE)
+
+suppressMessages(suppressWarnings({
+  set.seed(134)  
+  ps_nocontrol_filtrado_rare <- rarefy_even_depth(ps_nocontrol_filtrado, sample.size = 23394, trimOTUs = TRUE)
+}))
+
+png("graficos/profundidad_secuenciacion.png", width = 800, height = 600)
+
+plot(
+  sort(sample_sums(ps_nocontrol_filtrado)),
+  ylab = "Sequencing depth",
+  xlab = "Samples ordered by depth",
+  main = "Sequencing depth per sample",
+  cex.lab = 1.6,   
+  cex.axis = 1.4,   
+  cex.main = 1.8    
+)
+abline(h = 23394, col = "red", lwd = 2)
+
+dev.off()
+
+plot(
+  sort(sample_sums(ps_nocontrol_filtrado)),
+  ylab = "Sequencing depth",
+  xlab = "Samples ordered by depth",
+  main = "Sequencing depth per sample",
+  cex.lab = 1.6,   
+  cex.axis = 1.4,   
+  cex.main = 1.8    
+)
+
+```
+
+## Saving and loading 
+
+Saving of the phyloseq object and loading of data with phylogenetic distance.
+
+
+```{r}
+
+saveRDS(ps_nocontrol_filtrado_rare, "ps_nocontrol_filtrado_rare.rds")
+
+```
+
+In a separate script, the sequences from the previously generated phyloseq object were matched against a reference database with an associated phylogenetic tree and taxonomy (e.g., Greengenes2). This allowed the phylogenetic tree to be incorporated into the object and enabled analyses based on phylogenetic metrics (e.g., Faith's PD, UniFrac, etc.).
+
+```{r}
+
+nuevosdatos <- "phyloseq_objects_with_tree.Rdata"
+
+load(here("data",nuevosdatos ))
+
+```
+
+---
+
+# **Diversity analysis and correlations** 
+
+## Creation of working variables 
+
+```{r}
+
+datos_est <- as(sample_data(ps_nocontrol_filtrado_rare), "data.frame")
+datos_est$log_MPN <- log10(datos_est$MPN)
+datos_est$log_MPN.Peso <- datos_est$log_MPN / datos_est$Peso_Seco
+
+Riqueza <- estimate_richness(ps_nocontrol_filtrado_rare, measures = "Observed")
+Homogeneidad <- estimate_richness(ps_nocontrol_filtrado_rare, measures = "Shannon")
+
+Faith_D <- pd(as(otu_table(new_ps), "matrix"), phy_tree(new_ps))
+datos_est$Riqueza <- Riqueza[rownames(datos_est), "Observed"]
+datos_est$Homogeneidad <- Homogeneidad[rownames(datos_est), "Shannon"]
+datos_est$Faith_D <- Faith_D[rownames(datos_est), "PD"]
+
+# Variable type checking
+
+datos_est$Componentes   <- factor(datos_est$Componentes)  
+datos_est$Tipo   <- factor(datos_est$Tipo) 
+
+
+# Data preparation for subsequent analysis”
+abundancia_rel <- transform_sample_counts(ps_nocontrol_filtrado_rare, function(x) x / sum(x))
+abundancia_rel_df <- as.data.frame(otu_table(abundancia_rel))
+
+abund_t <- t(abundancia_rel_df)
+abund_t <- abund_t %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("clade_name")
+
+abund_t <- as_tibble(abund_t)
+
+# create new IDs ‘T_Coal_001’, ‘T_Coal_002...
+n <- nrow(abund_t)
+width <- max(3, nchar(as.character(n)))                       
+new_ids <- sprintf(paste0("T_Coal_%0", width, "d"), seq_len(n))
+
+# 2) preserve the original sequence and replace clade_name with the ID
+abund_t <- abund_t %>%
+  mutate(
+    original_seq = as.character(clade_name),   
+    clade_name = new_ids                       
+  )
+
+```
+
+```{r}
+
+table(sample_data(ps_nocontrol_filtrado_rare)$Componentes)
+
+```
+
+### Effect of Richness and phylogenetic diversity on Load and Weight 
+
+The effect of Richness and phylogenetic diversity on Load and Weight was assessed. First, the correlation between both variables was examined, and if one was detected, the fraction of phylogenetic diversity independent of Richness was calculated. Next, the effects of Richness and the fraction of phylogenetic diversity independent of Richness on Load and Weight were evaluated.
+
+```{r}
+
+options(contrasts = c("contr.sum", "contr.poly"))
+# 1) Initial exploration ---------------------------------------------------
+# Scatterplot of Richness vs Faith_D with smoothing and a fitted line to assess linearity
+
+png("graficos/riqueza_vs_faith.png", width = 800, height = 600)
+
+par(mar = c(5, 6.5, 4, 2) + 0.1,   
+    mgp = c(2.5, 0.8, 0)) 
+
+plot(datos_est$Riqueza, datos_est$Faith_D,
+     xlab = "Riqueza", ylab = "Diversidad",
+     main = "Riqueza frente a Diversidad",
+     cex.lab = 1.8,   
+     cex.axis = 1.6,  
+     cex.main = 2.2,  
+     cex = 1.2,       
+     pch = 20, col = "grey30")
+
+lines(lowess(datos_est$Riqueza, datos_est$Faith_D), col = "blue")
+abline(lm(Faith_D ~ Riqueza, data = datos_est), col = "red", lwd = 2)
+
+dev.off()
+
+# Correlation (numerical)
+r_rich_pd <- cor(datos_est$Riqueza, datos_est$Faith_D)
+cat("Correlación Riqueza - Faith_D:", round(r_rich_pd, 3), "\n")
+
+
+# 2) Residualize Faith_D with respect to Richness (fraction of Faith diversity independent of Richness) ---- ----
+m_pd_vs_r <- lm(Faith_D ~ Riqueza, data = datos_est)
+datos_est$PD_resid <- resid(m_pd_vs_r)   
+
+
+# 3) Models with the fraction of Faith diversity independent of Richness
+
+m_final_Peso <- lm(Peso_Seco ~ Riqueza + PD_resid, data = datos_est)
+cat("Resumen modelo final (Peso_Seco ~ Riqueza + PD_resid):\n"); 
+lmtest::bptest(m_final_Peso)
+print(summary(m_final_Peso))
+print(Anova(m_final_Peso, type = "II"))
+
+
+
+m_final_MPN <- lm(log_MPN ~ Riqueza + PD_resid, data = datos_est)
+cat("Resumen modelo final (MPN ~ Riqueza + PD_resid):\n"); 
+lmtest::bptest(m_final_MPN)
+
+print(summary(m_final_MPN))
+print(Anova(m_final_MPN, type = "II"))
+
+
+
+datos_est2 <- subset(datos_est, is.finite(log_MPN.Peso))
+
+m_final_MPN_Peso <- lm(log_MPN.Peso ~ Riqueza + PD_resid, data = datos_est2)
+cat("Resumen modelo final (MPN_Peso ~ Riqueza + PD_resid):\n"); 
+lmtest::bptest(m_final_MPN_Peso)
+
+print(summary(m_final_MPN_Peso))
+print(Anova(m_final_MPN_Peso, type = "II"))
+
+```
+---
+# **Phylogenetic analysis** 
+
+## Top 10 families 
+
+The 10 most abundant families were calculated.
+
+```{r}
+
+# Because the data were rarefied, this was done as follows
+
+ps_familia <- tax_glom(ps_nocontrol_filtrado_rare, taxrank = "Family")
+ps_familia_rel <- transform_sample_counts(ps_familia, function(x) x / sum(x))
+
+
+# Add "Other" to the plot
+
+df <- phyloseq::psmelt(ps_familia_rel) |>
+  mutate(
+    Family = as.character(Family),
+    Family = ifelse(is.na(Family) | Family == "", "Unassigned", Family),
+    Family_plot = forcats::fct_lump_n(Family, n = 10, w = Abundance, other_level = "Others")
+  )
+
+
+# Sum by sample (Top 10) 
+
+per_sample<- df |> 
+  group_by(Sample, Componentes, Family_plot) |> 
+  summarise(Abund_rel = sum(Abundance), .groups = "drop") 
+
+# Summarize for the plot
+
+familia_plot <- per_sample |>
+  group_by(Componentes, Family_plot) |>
+  summarise(NormalizedAbundance = mean(Abund_rel), .groups = "drop")
+
+
+# Reorder
+familia_plot <- familia_plot |>
+  mutate(
+    Family_plot = forcats::fct_reorder(Family_plot, NormalizedAbundance, .fun = mean, .desc = TRUE),
+    Family_plot = forcats::fct_relevel(Family_plot, "Others", after = Inf)
+  )
+
+
+Top10_otros <- ggplot(familia_plot, aes(x = Componentes, y = NormalizedAbundance, fill = Family_plot)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Top10 families",
+    x = "Components",
+    y = "Relative abundance",
+    fill = "Family"
+  ) +
+  theme_bw() +
+    guides(fill = guide_legend(nrow = 2)) +
+  theme(
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),  
+    axis.text.y = element_text(size = 12, ), 
+    axis.title.x = element_text(size = 14),         
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 12),
+    legend.position = "bottom",
+    strip.text = element_text(size = 12, face = "bold")
+   )  
+
+
+ggsave("graficos/Top10_Familias_otros.png",
+       plot = Top10_otros, width = 14, height = 6, dpi = 300)
+
+```
+---

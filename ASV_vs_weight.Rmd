@@ -1,0 +1,1142 @@
+---
+title: "ASV_vs_Weight"
+author: "Daniel Aguirre"
+date: "2026-06-29"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(phyloseq)
+setwd("C:/Users/DA.5015582/OneDrive - UAM/TRABAJO/Abiertos/Learning/ASV_vs_weight/")
+ps <- readRDS("ps_nocontrol_filtrado_rare.rds")
+```
+
+```{r}
+# ============================================================
+# STEP 1 — ASV screening for plant dry weight association analysis
+#
+# Description:
+# This chunk extracts ASV relative abundances and plant dry weight
+# (Peso_Seco) from the phyloseq object and computes summary statistics
+# for each ASV across all samples.
+#
+# The goal is to identify ASVs with sufficient abundance and prevalence
+# to be included in downstream correlation analyses with plant dry weight.
+#
+# Output:
+# - Summary table with prevalence and abundance statistics for each ASV
+# ============================================================
+
+library(phyloseq)
+library(dplyr)
+library(tidyr)
+
+## Extract OTU table
+otu_mat <- as(otu_table(ps), "matrix")
+
+if (taxa_are_rows(ps)) {
+  otu_mat <- t(otu_mat)
+}
+
+## Convert to relative abundance
+rel_abund <- sweep(otu_mat, 1, rowSums(otu_mat), "/")
+
+## Convert to long format
+asv_long_weight <- as.data.frame(rel_abund) %>%
+  tibble::rownames_to_column("SampleID") %>%
+  pivot_longer(
+    cols = -SampleID,
+    names_to = "ASV",
+    values_to = "rel_abundance"
+  )
+
+## Add dry weight
+sample_metadata <- data.frame(sample_data(ps)) %>%
+  tibble::rownames_to_column("SampleID") %>%
+  select(SampleID, Peso_Seco, Componentes)
+
+asv_long_weight <- asv_long_weight %>%
+  left_join(sample_metadata, by = "SampleID")
+
+## ASV summary stats
+asv_weight_summary <- asv_long_weight %>%
+  group_by(ASV) %>%
+  summarise(
+    n_present = sum(rel_abundance > 0),
+    n_above_0.1pct = sum(rel_abundance >= 0.001),
+    n_above_1pct = sum(rel_abundance >= 0.01),
+    mean_abundance = mean(rel_abundance),
+    median_abundance = median(rel_abundance),
+    max_abundance = max(rel_abundance),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_above_1pct))
+
+print(asv_weight_summary, n = 30)
+
+summary(asv_weight_summary$n_above_1pct)
+
+# Saved objects:
+# asv_long_weight   -> long-format ASV abundance + plant dry weight table
+# asv_weight_summary -> ASV prevalence/abundance summary for filtering
+```
+
+```{r}
+# ============================================================
+# STEP 2A — Compare ASV abundance/prevalence filters
+#
+# Description:
+# This chunk compares relaxed and strict ASV filters for downstream
+# association analyses with plant dry weight.
+#
+# Relaxed filter: ASV reaches >=0.1% relative abundance in at least 5 samples.
+# Strict filter:  ASV reaches >=1% relative abundance in at least 5 samples.
+#
+# Output:
+# - Number of retained ASVs under each filter
+# - Candidate ASV vectors for relaxed and strict analyses
+# ============================================================
+
+candidate_asvs_relaxed <- asv_weight_summary %>%
+  filter(n_above_0.1pct >= 5) %>%
+  pull(ASV)
+
+candidate_asvs_strict <- asv_weight_summary %>%
+  filter(n_above_1pct >= 5) %>%
+  pull(ASV)
+
+cat("Relaxed filter: >=0.1% in >=5 samples\n")
+cat("Number of ASVs:", length(candidate_asvs_relaxed), "\n\n")
+
+cat("Strict filter: >=1% in >=5 samples\n")
+cat("Number of ASVs:", length(candidate_asvs_strict), "\n\n")
+
+cat("Strict ASVs included within relaxed set:",
+    all(candidate_asvs_strict %in% candidate_asvs_relaxed), "\n")
+
+# Saved objects:
+# candidate_asvs_relaxed -> ASVs reaching >=0.1% in >=5 samples
+# candidate_asvs_strict  -> ASVs reaching >=1% in >=5 samples
+```
+
+```{r}
+# ============================================================
+# STEP 3 — Define ASV source sets and eligible samples
+#
+# Description:
+# This chunk defines, for each ASV, its source set based on single-inoculum
+# communities. An ASV is considered part of a single inoculum if its mean
+# relative abundance across replicates of that single is >= 0.1%.
+#
+# Then, for each ASV, all eligible samples are identified as samples whose
+# inoculum combination contains at least one source component.
+#
+# Finally, ASV prevalence is quantified across eligible samples to build
+# an eligibility-aware filter for downstream dry-weight association analyses.
+#
+# Output:
+# - ASV eligibility summary table
+# ============================================================
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+## ------------------------------------------------------------
+## 1. Mean abundance of each ASV in single inocula
+## ------------------------------------------------------------
+
+single_asv_means <- asv_long_weight %>%
+  filter(nchar(Componentes) == 1) %>%
+  group_by(ASV, Componentes) %>%
+  summarise(
+    mean_single_abundance = mean(rel_abundance),
+    .groups = "drop"
+  )
+
+## ------------------------------------------------------------
+## 2. Define source set
+## ------------------------------------------------------------
+
+asv_source_sets <- single_asv_means %>%
+  filter(mean_single_abundance >= 0.001) %>%
+  group_by(ASV) %>%
+  summarise(
+    source_components = list(Componentes),
+    n_source_singles = n(),
+    .groups = "drop"
+  )
+
+## ------------------------------------------------------------
+## 3. Get all samples
+## ------------------------------------------------------------
+
+sample_info <- asv_long_weight %>%
+  select(SampleID, Componentes) %>%
+  distinct()
+
+## ------------------------------------------------------------
+## 4. Compute eligibility metrics for each ASV
+## ------------------------------------------------------------
+
+asv_eligibility_summary <- lapply(seq_len(nrow(asv_source_sets)), function(i) {
+  
+  asv_i <- asv_source_sets$ASV[i]
+  source_set <- unlist(asv_source_sets$source_components[[i]])
+  
+  eligible_samples <- sample_info %>%
+    filter(
+      sapply(Componentes, function(x) {
+        any(str_detect(x, source_set))
+      })
+    )
+  
+  asv_data <- asv_long_weight %>%
+    filter(
+      ASV == asv_i,
+      SampleID %in% eligible_samples$SampleID
+    )
+  
+  tibble(
+    ASV = asv_i,
+    n_source_singles = length(source_set),
+    n_eligible = nrow(eligible_samples),
+    n_above_0.1pct_in_eligible = sum(asv_data$rel_abundance >= 0.001),
+    prop_above_0.1pct_in_eligible =
+      sum(asv_data$rel_abundance >= 0.001) / nrow(eligible_samples)
+  )
+}) %>%
+  bind_rows()
+
+## ------------------------------------------------------------
+## 5. Sort summary
+## ------------------------------------------------------------
+
+asv_eligibility_summary <- asv_eligibility_summary %>%
+  arrange(desc(prop_above_0.1pct_in_eligible))
+
+print(asv_eligibility_summary, n = 30)
+
+summary(asv_eligibility_summary$prop_above_0.1pct_in_eligible)
+
+# Saved objects:
+# asv_source_sets -> source single inocula for each ASV
+# asv_eligibility_summary -> eligibility-aware prevalence summary
+```
+
+```{r}
+# ============================================================
+# STEP 4 — Generate ASV IDs and candidate ASV annotation table
+#
+# Description:
+# This chunk creates simplified ASV identifiers (ASV_1, ASV_2, etc.)
+# ranked by global mean relative abundance across all samples.
+#
+# Taxonomic annotation is extracted directly from the phyloseq object.
+# Then, candidate ASVs passing the eligibility-aware filter are annotated
+# with ASV IDs and taxonomy for downstream interpretation.
+#
+# Output:
+# - Annotated candidate ASV table (IDs + taxonomy + eligibility metrics)
+# ============================================================
+
+library(dplyr)
+library(tibble)
+
+## ------------------------------------------------------------
+## 1. Create ASV IDs ranked by global mean abundance
+## ------------------------------------------------------------
+
+asv_ids <- asv_long_weight %>%
+  group_by(ASV) %>%
+  summarise(global_abundance = sum(rel_abundance), .groups = "drop") %>%
+  arrange(desc(global_abundance)) %>%
+  mutate(ASV_ID = paste0("ASV_", row_number())) %>%
+  select(ASV, ASV_ID)
+
+## ------------------------------------------------------------
+## 2. Extract taxonomy from phyloseq
+## ------------------------------------------------------------
+
+tax_df <- as.data.frame(tax_table(ps)) %>%
+  rownames_to_column("ASV")
+
+## Keep useful taxonomic levels if present
+tax_cols <- intersect(
+  c("Phylum", "Class", "Order", "Family", "Genus"),
+  colnames(tax_df)
+)
+
+tax_df <- tax_df %>%
+  select(ASV, all_of(tax_cols))
+
+## ------------------------------------------------------------
+## 3. Filter candidate ASVs
+## ------------------------------------------------------------
+
+candidate_asvs <- asv_eligibility_summary %>%
+  filter(prop_above_0.1pct_in_eligible >= 0.1)
+
+## ------------------------------------------------------------
+## 4. Annotate candidate ASVs
+## ------------------------------------------------------------
+
+candidate_asv_table <- candidate_asvs %>%
+  left_join(asv_ids, by = "ASV") %>%
+  left_join(tax_df, by = "ASV") %>%
+  arrange(desc(prop_above_0.1pct_in_eligible))
+
+print(candidate_asv_table, n = 30)
+
+# Saved objects:
+# asv_ids -> maps full ASV sequences to simplified ASV IDs
+# tax_df -> taxonomic annotation extracted from phyloseq
+# candidate_asv_table -> filtered candidate ASVs with IDs and taxonomy
+```
+
+```{r}
+# ============================================================
+# STEP 5 — Eligibility-aware Spearman correlation with plant dry weight
+#
+# Description:
+# This chunk tests whether each candidate ASV is monotonically associated
+# with plant dry weight (Peso_Seco).
+#
+# For each ASV, only eligible samples are used. A sample is eligible when
+# its inoculum combination contains at least one source component where
+# that ASV was detected in single-inoculum communities.
+#
+# Spearman correlation is calculated between ASV relative abundance and
+# Peso_Seco. P-values are corrected using Benjamini-Hochberg FDR.
+#
+# Output:
+# - Spearman correlation table for candidate ASVs
+# ============================================================
+
+library(dplyr)
+library(stringr)
+
+candidate_asv_ids <- candidate_asv_table$ASV
+
+asv_spearman_eligible <- lapply(candidate_asv_ids, function(asv_i) {
+
+  source_set <- asv_source_sets %>%
+    filter(ASV == asv_i) %>%
+    pull(source_components) %>%
+    .[[1]]
+
+  eligible_samples <- sample_info %>%
+    filter(
+      sapply(Componentes, function(x) {
+        any(str_detect(x, source_set))
+      })
+    )
+
+  dat_i <- asv_long_weight %>%
+    filter(
+      ASV == asv_i,
+      SampleID %in% eligible_samples$SampleID,
+      !is.na(Peso_Seco)
+    )
+
+  test_i <- suppressWarnings(
+    cor.test(
+      dat_i$rel_abundance,
+      dat_i$Peso_Seco,
+      method = "spearman",
+      exact = FALSE
+    )
+  )
+
+  tibble(
+    ASV = asv_i,
+    n = nrow(dat_i),
+    rho = unname(test_i$estimate),
+    p_value = test_i$p.value
+  )
+}) %>%
+  bind_rows() %>%
+  mutate(
+    p_adj = p.adjust(p_value, method = "BH")
+  ) %>%
+  left_join(candidate_asv_table, by = "ASV") %>%
+  arrange(p_value)
+
+print(
+  asv_spearman_eligible %>%
+    select(ASV_ID, rho, p_value, p_adj, n,
+           n_source_singles, Family, Genus),
+  n = 30
+)
+
+top_positive_weight_asvs <- asv_spearman_eligible %>%
+  arrange(desc(rho)) %>%
+  slice_head(n = 20)
+
+top_negative_weight_asvs <- asv_spearman_eligible %>%
+  arrange(rho) %>%
+  slice_head(n = 20)
+
+print(
+  top_positive_weight_asvs %>%
+    select(ASV_ID, rho, p_value, p_adj, n, Family, Genus),
+  n = 20
+)
+
+print(
+  top_negative_weight_asvs %>%
+    select(ASV_ID, rho, p_value, p_adj, n, Family, Genus),
+  n = 20
+)
+
+write.csv(
+  asv_spearman_eligible,
+  "asv_spearman_peso_seco_eligible_samples.csv",
+  row.names = FALSE
+)
+
+# Saved objects:
+# asv_spearman_eligible -> eligibility-aware Spearman correlations between ASV abundance and Peso_Seco
+# top_positive_weight_asvs -> ASVs most positively associated with Peso_Seco
+# top_negative_weight_asvs -> ASVs most negatively associated with Peso_Seco
+# Output file:
+# asv_spearman_peso_seco_eligible_samples.csv -> full Spearman result table
+```
+
+```{r}
+# ============================================================
+# STEP 6 — Residual dry-weight correlations with ASV abundance
+#
+# Description:
+# This chunk tests whether each candidate ASV is associated with
+# plant dry weight after removing the mean effect of inoculum
+# combination.
+#
+# First, Peso_Seco is modelled as a function of Componentes.
+# The residuals of this model represent whether each plant is heavier
+# or lighter than expected for its inoculum combination.
+#
+# Then, for each candidate ASV, Spearman correlation is calculated
+# between ASV relative abundance and residual Peso_Seco, using only
+# eligible samples for that ASV.
+#
+# Output:
+# - Eligibility-aware Spearman correlations between ASV abundance
+#   and residual plant dry weight
+# ============================================================
+
+library(dplyr)
+library(stringr)
+
+## ------------------------------------------------------------
+## 1. Calculate residual dry weight after removing Componentes effect
+## ------------------------------------------------------------
+
+sample_metadata_resid <- sample_metadata %>%
+  filter(!is.na(Peso_Seco)) %>%
+  mutate(
+    Componentes = factor(Componentes)
+  )
+
+peso_model <- lm(Peso_Seco ~ Componentes, data = sample_metadata_resid)
+
+sample_metadata_resid <- sample_metadata_resid %>%
+  mutate(
+    Peso_Seco_residual = residuals(peso_model)
+  )
+
+## Add residuals to ASV long table
+asv_long_weight_resid <- asv_long_weight %>%
+  select(-any_of("Peso_Seco_residual")) %>%
+  left_join(
+    sample_metadata_resid %>%
+      select(SampleID, Peso_Seco_residual),
+    by = "SampleID"
+  )
+
+## ------------------------------------------------------------
+## 2. Spearman correlation per ASV using eligible samples
+## ------------------------------------------------------------
+
+candidate_asv_ids <- candidate_asv_table$ASV
+
+asv_spearman_residuals <- lapply(candidate_asv_ids, function(asv_i) {
+  
+  source_set <- asv_source_sets %>%
+    filter(ASV == asv_i) %>%
+    pull(source_components) %>%
+    .[[1]]
+  
+  eligible_samples <- sample_info %>%
+    filter(
+      sapply(Componentes, function(x) {
+        any(str_detect(x, source_set))
+      })
+    )
+  
+  dat_i <- asv_long_weight_resid %>%
+    filter(
+      ASV == asv_i,
+      SampleID %in% eligible_samples$SampleID,
+      !is.na(Peso_Seco_residual)
+    )
+  
+  test_i <- suppressWarnings(
+    cor.test(
+      dat_i$rel_abundance,
+      dat_i$Peso_Seco_residual,
+      method = "spearman",
+      exact = FALSE
+    )
+  )
+  
+  tibble(
+    ASV = asv_i,
+    n = nrow(dat_i),
+    rho_residual = unname(test_i$estimate),
+    p_value_residual = test_i$p.value
+  )
+}) %>%
+  bind_rows() %>%
+  mutate(
+    p_adj_residual = p.adjust(p_value_residual, method = "BH")
+  ) %>%
+  left_join(candidate_asv_table, by = "ASV") %>%
+  arrange(p_value_residual)
+
+## ------------------------------------------------------------
+## 3. Print strongest associations
+## ------------------------------------------------------------
+
+print(
+  asv_spearman_residuals %>%
+    select(ASV_ID, rho_residual, p_value_residual, p_adj_residual,
+           n, n_source_singles, Family, Genus),
+  n = 30
+)
+
+top_positive_weight_asvs_residual <- asv_spearman_residuals %>%
+  arrange(desc(rho_residual)) %>%
+  slice_head(n = 20)
+
+top_negative_weight_asvs_residual <- asv_spearman_residuals %>%
+  arrange(rho_residual) %>%
+  slice_head(n = 20)
+
+print(
+  top_positive_weight_asvs_residual %>%
+    select(ASV_ID, rho_residual, p_value_residual,
+           p_adj_residual, n, Family, Genus),
+  n = 20
+)
+
+print(
+  top_negative_weight_asvs_residual %>%
+    select(ASV_ID, rho_residual, p_value_residual,
+           p_adj_residual, n, Family, Genus),
+  n = 20
+)
+
+write.csv(
+  asv_spearman_residuals,
+  "asv_spearman_peso_seco_residuals_eligible_samples.csv",
+  row.names = FALSE
+)
+
+# Saved objects:
+# peso_model -> linear model removing mean Componentes effect from Peso_Seco
+# sample_metadata_resid -> sample metadata with Peso_Seco_residual
+# asv_long_weight_resid -> ASV abundance table with residual dry weight
+# asv_spearman_residuals -> eligibility-aware correlations between ASV abundance and residual dry weight
+# top_positive_weight_asvs_residual -> ASVs most positively associated with residual dry weight
+# top_negative_weight_asvs_residual -> ASVs most negatively associated with residual dry weight
+# Output file:
+# asv_spearman_peso_seco_residuals_eligible_samples.csv -> full residual-correlation result table
+```
+
+```{r}
+# ============================================================
+# STEP 7A — Co-occurrence of ASV_106 and ASV_117
+#
+# Description:
+# This chunk determines how often ASV_106 and ASV_117 co-occur
+# across samples. ASVs are considered present when relative abundance
+# is >= 0.1%.
+#
+# Samples are classified into four groups:
+# - Neither ASV present
+# - Only ASV_106 present
+# - Only ASV_117 present
+# - Both ASVs present
+#
+# Output:
+# - Sample counts per group
+# - Mean and median Peso_Seco per group
+# ============================================================
+
+library(dplyr)
+library(tidyr)
+
+## Get ASV sequences
+asv106_seq <- asv_ids %>%
+  filter(ASV_ID == "ASV_106") %>%
+  pull(ASV)
+
+asv117_seq <- asv_ids %>%
+  filter(ASV_ID == "ASV_117") %>%
+  pull(ASV)
+
+## Build presence table
+asv106_117_presence <- asv_long_weight %>%
+  filter(ASV %in% c(asv106_seq, asv117_seq)) %>%
+  left_join(asv_ids, by = "ASV") %>%
+  mutate(
+    present = rel_abundance >= 0.001
+  ) %>%
+  select(SampleID, Peso_Seco, ASV_ID, present) %>%
+  pivot_wider(
+    names_from = ASV_ID,
+    values_from = present
+  ) %>%
+  mutate(
+    ASV_106 = ifelse(is.na(ASV_106), FALSE, ASV_106),
+    ASV_117 = ifelse(is.na(ASV_117), FALSE, ASV_117),
+    group = case_when(
+      !ASV_106 & !ASV_117 ~ "Neither",
+      ASV_106 & !ASV_117 ~ "ASV_106 only",
+      !ASV_106 & ASV_117 ~ "ASV_117 only",
+      ASV_106 & ASV_117 ~ "Both"
+    )
+  )
+
+group_summary <- asv106_117_presence %>%
+  group_by(group) %>%
+  summarise(
+    n = n(),
+    mean_weight = mean(Peso_Seco, na.rm = TRUE),
+    median_weight = median(Peso_Seco, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(table(asv106_117_presence$group))
+print(group_summary)
+
+# Saved objects:
+# asv106_117_presence -> sample-level presence table for ASV_106 and ASV_117
+# group_summary -> summary stats per co-occurrence group
+
+# ============================================================
+# STEP 7B — Plot Peso_Seco by ASV_106/117 co-occurrence group
+#
+# Description:
+# This chunk visualizes plant dry weight distributions across the
+# four ASV co-occurrence groups.
+#
+# Output:
+# - Boxplot + jitter plot of Peso_Seco
+# ============================================================
+
+library(ggplot2)
+
+p_asv106_117 <- ggplot(asv106_117_presence,
+                       aes(x = group, y = Peso_Seco)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.15, alpha = 0.5) +
+  theme_bw() +
+  labs(
+    title = "Plant dry weight by ASV_106 / ASV_117 co-occurrence",
+    x = NULL,
+    y = "Peso_Seco"
+  ) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+print(p_asv106_117)
+
+ggsave(
+  "peso_seco_ASV106_ASV117_groups.png",
+  p_asv106_117,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+
+# Saved objects:
+# p_asv106_117 -> boxplot of Peso_Seco by ASV co-occurrence group
+# Output file:
+# peso_seco_ASV106_ASV117_groups.png
+
+# ============================================================
+# STEP 7C — Formal statistical tests for ASV_106/117 co-occurrence
+#
+# Description:
+# This chunk performs:
+# 1. Wilcoxon test comparing "Both" vs all other samples
+
+#
+# Output:
+# - Wilcoxon p-value
+# ============================================================
+
+## Binary variable: both present or not
+asv106_117_presence <- asv106_117_presence %>%
+  mutate(
+    both_present = group == "Both"
+  )
+
+## Wilcoxon test
+wilcox_both <- wilcox.test(
+  Peso_Seco ~ both_present,
+  data = asv106_117_presence
+)
+
+print(wilcox_both)
+
+asv106_117_presence %>%
+  left_join(sample_metadata %>% select(SampleID, Componentes), by = "SampleID") %>%
+  filter(group == "Both") %>%
+  select(SampleID, Componentes, Peso_Seco)
+
+asv106_117_presence %>%
+  left_join(sample_metadata %>% select(SampleID, Componentes), by = "SampleID") %>%
+  mutate(has_E = grepl("E", Componentes)) %>%
+  filter(has_E) %>%
+  group_by(group == "Both") %>%
+  summarise(
+    n = n(),
+    mean_weight = mean(Peso_Seco),
+    median_weight = median(Peso_Seco)
+  )
+# Saved objects:
+# wilcox_both -> Wilcoxon test comparing Both vs Rest
+```
+
+
+```{r}
+load("metadata_centroid.RData")
+asv106_117_presence %>%
+  left_join(
+    metadata_centroid %>%
+      select(SampleID, distance_to_centroid),
+    by = "SampleID"
+  ) %>%
+  group_by(group) %>%
+  summarise(
+    n = n(),
+    mean_dist = mean(distance_to_centroid, na.rm = TRUE),
+    median_dist = median(distance_to_centroid, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+wilcox.test(
+  distance_to_centroid ~ both_present,
+  data = asv106_117_presence %>%
+    left_join(
+      metadata_centroid %>%
+        select(SampleID, distance_to_centroid),
+      by = "SampleID"
+    )
+)
+```
+
+```{r}
+# ============================================================
+# STEP 8 — Association between distance to centroid and plant dry weight
+#
+# Description:
+# This chunk evaluates whether plant dry weight is associated with
+# the distance of each sample to the global compositional centroid
+# (Bray-Curtis attractor).
+#
+# Three analyses are performed:
+# 1. Spearman correlation between distance_to_centroid and Peso_Seco
+# 2. Spearman correlation between distance_to_centroid and residual Peso_Seco
+# 3. Scatterplot visualization
+#
+# Output:
+# - Correlation statistics
+# - Scatterplots with regression lines
+# ============================================================
+
+library(dplyr)
+library(ggplot2)
+
+## ------------------------------------------------------------
+## 1. Merge centroid distance with sample metadata
+## ------------------------------------------------------------
+
+centroid_weight_df <- metadata_centroid %>%
+  select(SampleID, Componentes, distance_to_centroid, Peso_Seco) %>%
+  filter(!is.na(Peso_Seco))
+
+## ------------------------------------------------------------
+## 2. Raw correlation
+## ------------------------------------------------------------
+
+cor_centroid_weight <- cor.test(
+  centroid_weight_df$distance_to_centroid,
+  centroid_weight_df$Peso_Seco,
+  method = "spearman",
+  exact = FALSE
+)
+
+print(cor_centroid_weight)
+
+## ------------------------------------------------------------
+## 3. Residual correlation (controlling for Componentes)
+## ------------------------------------------------------------
+
+peso_model_centroid <- lm(Peso_Seco ~ Componentes, data = centroid_weight_df)
+
+centroid_weight_df <- centroid_weight_df %>%
+  mutate(
+    Peso_Seco_residual = residuals(peso_model_centroid)
+  )
+
+cor_centroid_weight_resid <- cor.test(
+  centroid_weight_df$distance_to_centroid,
+  centroid_weight_df$Peso_Seco_residual,
+  method = "spearman",
+  exact = FALSE
+)
+
+print(cor_centroid_weight_resid)
+
+## ------------------------------------------------------------
+## 4. Plot raw relationship
+## ------------------------------------------------------------
+
+p_centroid_weight <- ggplot(
+  centroid_weight_df,
+  aes(x = distance_to_centroid, y = Peso_Seco)
+) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE) +
+  theme_bw() +
+  labs(
+    title = "Distance to centroid vs plant dry weight",
+    x = "Distance to centroid",
+    y = "Peso_Seco"
+  )
+
+print(p_centroid_weight)
+
+## ------------------------------------------------------------
+## 5. Plot residual relationship
+## ------------------------------------------------------------
+
+p_centroid_weight_resid <- ggplot(
+  centroid_weight_df,
+  aes(x = distance_to_centroid, y = Peso_Seco_residual)
+) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE) +
+  theme_bw() +
+  labs(
+    title = "Distance to centroid vs residual plant dry weight",
+    x = "Distance to centroid",
+    y = "Residual Peso_Seco"
+  )
+
+print(p_centroid_weight_resid)
+
+# Saved objects:
+# centroid_weight_df -> sample metadata with centroid distance and dry weight
+# cor_centroid_weight -> raw correlation test
+# cor_centroid_weight_resid -> residual correlation test
+# p_centroid_weight -> raw scatterplot
+# p_centroid_weight_resid -> residual scatterplot
+```
+```{r}
+# ============================================================
+# STEP 9A — Genus-level associations with plant dry weight
+#
+# Description:
+# This chunk collapses ASV abundances at genus level and tests
+# whether genus-level relative abundances are associated with
+# plant dry weight.
+#
+# Analyses:
+# 1. Raw Spearman correlation with Peso_Seco
+# 2. Residual Spearman correlation with residual Peso_Seco
+#
+# Filtering:
+# Genera retained if relative abundance >= 0.1% in at least 10 samples
+#
+# Output:
+# - Significant genera associated with plant dry weight
+# ============================================================
+
+library(phyloseq)
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+## ------------------------------------------------------------
+## 1. Build genus-level abundance table
+## ------------------------------------------------------------
+
+otu_mat <- as.data.frame(otu_table(ps))
+if(taxa_are_rows(ps)) otu_mat <- t(otu_mat)
+
+tax_df <- as.data.frame(tax_table(ps)) %>%
+  rownames_to_column("ASV")
+
+tax_df$Genus[is.na(tax_df$Genus)] <- "Unassigned"
+
+otu_long <- as.data.frame(otu_mat) %>%
+  rownames_to_column("SampleID") %>%
+  pivot_longer(
+    cols = -SampleID,
+    names_to = "ASV",
+    values_to = "rel_abundance"
+  )
+
+genus_long <- otu_long %>%
+  left_join(
+    tax_df %>% select(ASV, Genus),
+    by = "ASV"
+  ) %>%
+  group_by(SampleID, Genus) %>%
+  summarise(
+    rel_abundance = sum(rel_abundance),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    sample_metadata %>% select(SampleID, Peso_Seco),
+    by = "SampleID"
+  ) %>%
+  left_join(
+    sample_metadata_resid %>% select(SampleID, Peso_Seco_residual),
+    by = "SampleID"
+  )
+
+## ------------------------------------------------------------
+## 2. Filter genera
+## ------------------------------------------------------------
+
+genus_summary <- genus_long %>%
+  group_by(Genus) %>%
+  summarise(
+    n_above_0.1pct = sum(rel_abundance >= 0.001),
+    mean_abundance = mean(rel_abundance),
+    .groups = "drop"
+  )
+
+candidate_genera <- genus_summary %>%
+  filter(n_above_0.1pct >= 10) %>%
+  pull(Genus)
+
+cat("Number of candidate genera:", length(candidate_genera), "\n")
+
+## ------------------------------------------------------------
+## 3. Raw Spearman correlations
+## ------------------------------------------------------------
+
+genus_spearman <- lapply(candidate_genera, function(g) {
+  
+  dat <- genus_long %>%
+    filter(Genus == g)
+  
+  test <- cor.test(
+    dat$rel_abundance,
+    dat$Peso_Seco,
+    method = "spearman",
+    exact = FALSE
+  )
+  
+  tibble(
+    Genus = g,
+    rho = unname(test$estimate),
+    p_value = test$p.value
+  )
+}) %>%
+  bind_rows() %>%
+  mutate(
+    p_adj = p.adjust(p_value, method = "BH")
+  ) %>%
+  arrange(p_value)
+
+print(genus_spearman, n = 30)
+
+## ------------------------------------------------------------
+## 4. Residual Spearman correlations
+## ------------------------------------------------------------
+
+genus_spearman_resid <- lapply(candidate_genera, function(g) {
+  
+  dat <- genus_long %>%
+    filter(Genus == g)
+  
+  test <- cor.test(
+    dat$rel_abundance,
+    dat$Peso_Seco_residual,
+    method = "spearman",
+    exact = FALSE
+  )
+  
+  tibble(
+    Genus = g,
+    rho_residual = unname(test$estimate),
+    p_value_residual = test$p.value
+  )
+}) %>%
+  bind_rows() %>%
+  mutate(
+    p_adj_residual = p.adjust(p_value_residual, method = "BH")
+  ) %>%
+  arrange(p_value_residual)
+
+print(genus_spearman_resid, n = 30)
+
+# Saved objects:
+# genus_long
+# genus_spearman
+# genus_spearman_resid
+```
+
+```{r}
+# ============================================================
+# STEP 9B — Family-level associations with plant dry weight
+#
+# Description:
+# This chunk collapses ASV abundances at family level and tests
+# whether family-level relative abundances are associated with
+# plant dry weight.
+#
+# Analyses:
+# 1. Raw Spearman correlation with Peso_Seco
+# 2. Residual Spearman correlation with residual Peso_Seco
+#
+# Filtering:
+# Families retained if relative abundance >= 0.1% in at least 10 samples
+#
+# Output:
+# - Significant families associated with plant dry weight
+# ============================================================
+
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+## ------------------------------------------------------------
+## 1. Build family-level abundance table
+## ------------------------------------------------------------
+
+tax_df <- as.data.frame(tax_table(ps)) %>%
+  rownames_to_column("ASV")
+
+tax_df$Family[is.na(tax_df$Family)] <- "Unassigned"
+
+family_long <- otu_long %>%
+  left_join(
+    tax_df %>% select(ASV, Family),
+    by = "ASV"
+  ) %>%
+  group_by(SampleID, Family) %>%
+  summarise(
+    rel_abundance = sum(rel_abundance),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    sample_metadata %>% select(SampleID, Peso_Seco),
+    by = "SampleID"
+  ) %>%
+  left_join(
+    sample_metadata_resid %>% select(SampleID, Peso_Seco_residual),
+    by = "SampleID"
+  )
+
+## ------------------------------------------------------------
+## 2. Filter families
+## ------------------------------------------------------------
+
+family_summary <- family_long %>%
+  group_by(Family) %>%
+  summarise(
+    n_above_0.1pct = sum(rel_abundance >= 0.001),
+    mean_abundance = mean(rel_abundance),
+    .groups = "drop"
+  )
+
+candidate_families <- family_summary %>%
+  filter(n_above_0.1pct >= 10) %>%
+  pull(Family)
+
+cat("Number of candidate families:", length(candidate_families), "\n")
+
+## ------------------------------------------------------------
+## 3. Raw Spearman correlations
+## ------------------------------------------------------------
+
+family_spearman <- lapply(candidate_families, function(f) {
+  
+  dat <- family_long %>%
+    filter(Family == f)
+  
+  test <- cor.test(
+    dat$rel_abundance,
+    dat$Peso_Seco,
+    method = "spearman",
+    exact = FALSE
+  )
+  
+  tibble(
+    Family = f,
+    rho = unname(test$estimate),
+    p_value = test$p.value
+  )
+}) %>%
+  bind_rows() %>%
+  mutate(
+    p_adj = p.adjust(p_value, method = "BH")
+  ) %>%
+  arrange(p_value)
+
+print(family_spearman, n = 30)
+
+## ------------------------------------------------------------
+## 4. Residual Spearman correlations
+## ------------------------------------------------------------
+
+family_spearman_resid <- lapply(candidate_families, function(f) {
+  
+  dat <- family_long %>%
+    filter(Family == f)
+  
+  test <- cor.test(
+    dat$rel_abundance,
+    dat$Peso_Seco_residual,
+    method = "spearman",
+    exact = FALSE
+  )
+  
+  tibble(
+    Family = f,
+    rho_residual = unname(test$estimate),
+    p_value_residual = test$p.value
+  )
+}) %>%
+  bind_rows() %>%
+  mutate(
+    p_adj_residual = p.adjust(p_value_residual, method = "BH")
+  ) %>%
+  arrange(p_value_residual)
+
+print(family_spearman_resid, n = 30)
+
+# Saved objects:
+# family_long
+# family_spearman
+# family_spearman_resid
+```
+
+
+
+
+
+

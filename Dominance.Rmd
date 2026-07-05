@@ -1,0 +1,1607 @@
+---
+title: "Script capítulo Coalescencia"
+author: "Ruben Chaboy"
+date: 
+output: html_document
+---
+<style>
+hr {
+  border: 0;
+  height: 8px;        
+  background: #000;   
+  margin: 20px 0;     
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+---
+
+## Loading of the libraries and data 
+
+Here we load the libraries we will use in the study. The data generated from sequence processing following the standard workflow of the DADA2 package are loaded. These data contain the table of ASV abundances per sample, as well as their taxonomic assignment. 
+
+
+```{r}
+knitr::opts_knit$set(root.dir = getwd())
+suppressMessages(suppressWarnings({
+datos <- "dada2multithreads.RData"
+suppressPackageStartupMessages({
+library(dada2)
+library(ggplot2)
+library(here)
+library(phyloseq)
+library(microbiome)
+library(dplyr)
+library(writexl)
+library(readxl)
+library(openxlsx)
+library(gridExtra)
+library(patchwork)
+library(Biostrings)
+library(tidyr)
+library(tibble)
+library(vegan)
+library(scales)
+library(car)})
+library(emmeans)
+library(officer)
+library(flextable)
+library(patchwork)
+library(broom)
+library(pheatmap)
+library(picante)
+library(reshape2)
+library(ppcor)
+library(gtsummary)
+library(stringr)
+library(readr)
+library(eulerr)
+library(rlang)
+library(gtools)
+library(ragg)
+library(magick)
+library(igraph)
+library(ggraph)
+library(tidygraph)
+theme_set(theme_bw())
+load(here("data",datos)) })) 
+
+dir.create("test")
+dir.create("graficos")
+dir.create("graficos/individual")
+dir.create("graficos/parejas")
+
+out_graf <- "graficos"
+out_graf_1 <- "graficos/individual"
+out_graf_2 <- "graficos/parejas"
+
+if (!dir.exists(out_graf_1)) dir.create(out_graf_1, recursive = TRUE)
+if (!dir.exists(out_graf_2)) dir.create(out_graf_2, recursive = TRUE)
+
+```
+
+## Data preparation
+  
+1. All experimental data were imported from an Excel file.
+2. A phyloseq object was created.
+
+```{r}
+
+samdf <- read_excel("metadata_Coales.xlsx")
+samdf <- as.data.frame(samdf)
+
+
+rownames(samdf) <- samdf$Nombre
+
+ps <- phyloseq(otu_table(seqtab_nochim, taxa_are_rows = FALSE), 
+               sample_data(samdf), 
+               tax_table(tax))
+
+```
+
+### Eliminación de controles y muestras no representativas {#controles}
+
+Samples that correspond to controls, DNA extraction controls (Cext), and negative PCR controls (Cneg) are eliminated. Samples containing community B are also eliminated. Finally, samples from dead or small plants are eliminated.
+```{r}
+
+ps_nocontrol <- subset_samples(
+  ps,
+  !(Tipo %in% c("Cext", "Cneg")) &
+  !grepl("B", Componentes) &
+   !Observaciones %in% c("muerta", "pequeña")
+)
+
+```
+
+### Removal of non-bacterial sequences
+
+Sequences corresponding to mitochondria, chloroplasts, and eukaryotes were removed. This was done because the selected primers may also amplify the 16S region of these organelles.
+
+
+```{r}
+
+print("Inicial:")
+ps_nocontrol
+inicial<-sum(otu_table(ps_nocontrol))
+print ("Aqui vamos a quitar cloroplastos, mitocondrias y eucariotas")
+ps_nocontrol_filtrado<- subset_taxa(ps_nocontrol, Class!="Chloroplast")
+sin_cloroplastos<-sum(otu_table(ps_nocontrol_filtrado))
+ps_nocontrol_filtrado <- subset_taxa(ps_nocontrol_filtrado, Family!="Mitochondria")
+sin_mitocondrias<-sum(otu_table(ps_nocontrol_filtrado))
+ps_nocontrol_filtrado <- subset_taxa(ps_nocontrol_filtrado, Kingdom!="Eukaryota")
+sin_eucariotas<-sum(otu_table(ps_nocontrol_filtrado))
+valores<-c(inicial,sin_cloroplastos,sin_mitocondrias,sin_eucariotas)
+print("inicial,sin_cloroplastos,sin_mitocondrias,sin_eucariotas")
+print(valores)
+print(paste0("Total inicial= ",inicial))
+print(paste0("  quitando cloroplastos= ",sin_cloroplastos))
+print(paste0("  quitando cloroplastos y mitocondrias= ",sin_mitocondrias))
+print(paste0("  quitando cloroplastos, mitocondrias y eucariotas= ",sin_eucariotas))
+print("Filtrado:")
+ps_nocontrol_filtrado
+
+suppressMessages(summarize_phyloseq(ps_nocontrol_filtrado))
+
+```
+
+
+### Correction of NAs 
+
+Samples with MPN values recorded as NA, either because the corresponding bacteria did not grow in those samples or because the values were below the detection limit (<110000 MPN/mL), were converted to the detection-limit value of 220000 MPN per plant.
+
+1. The text values ‘NA’ are replaced with missing values, which are coded as NA, but not in text format as they appear in the original data sheet. 
+2. The MPN column was converted to numeric type.
+The NA (missing) values in the MPN column are replaced with 220000.
+4. All values below 110000 in the MPN column were converted to 220000.
+
+For dry weight, samples with NA values (because the aboveground part did not grow sufficiently) were assigned a value of 0 g.
+
+1. The text values ‘NA’ are replaced with NA (missing) values.
+2. The Weight column was converted to numeric type.
+3.  The NA (missing) values in the Weight column are replaced with 0.
+
+
+```{r}
+
+sample_data(ps_nocontrol_filtrado)$MPN[sample_data(ps_nocontrol_filtrado)$MPN == "NA"] <- NA
+sample_data(ps_nocontrol_filtrado)$MPN <- as.numeric(sample_data(ps_nocontrol_filtrado)$MPN)
+sample_data(ps_nocontrol_filtrado)$MPN[is.na(sample_data(ps_nocontrol_filtrado)$MPN)] <- 220000
+sample_data(ps_nocontrol_filtrado)$MPN[sample_data(ps_nocontrol_filtrado)$MPN < 220000] <- 110000
+
+sample_data(ps_nocontrol_filtrado)$Peso_Seco[sample_data(ps_nocontrol_filtrado)$Peso_Seco == "NA"] <- NA
+sample_data(ps_nocontrol_filtrado)$Peso_Seco <- as.numeric(sample_data(ps_nocontrol_filtrado)$Peso_Seco)
+sample_data(ps_nocontrol_filtrado)$Peso_Seco[is.na(sample_data(ps_nocontrol_filtrado)$Peso_Seco)] <- 0
+
+```
+
+## Subsampling 
+
+The number of sequences per sample was visualized to determine the subsampling depth. A fixed seed of 134 was used.
+
+```{r}
+
+sort(sample_sums(ps_nocontrol_filtrado), decreasing = TRUE)
+
+suppressMessages(suppressWarnings({
+  set.seed(134)  
+  ps_nocontrol_filtrado_rare <- rarefy_even_depth(ps_nocontrol_filtrado, sample.size = 23394, trimOTUs = TRUE)
+}))
+
+png("graficos/profundidad_secuenciacion.png", width = 800, height = 600)
+
+plot(
+  sort(sample_sums(ps_nocontrol_filtrado)),
+  ylab = "Sequencing depth",
+  xlab = "Samples ordered by depth",
+  main = "Sequencing depth per sample",
+  cex.lab = 1.6,   
+  cex.axis = 1.4,   
+  cex.main = 1.8    
+)
+abline(h = 23394, col = "red", lwd = 2)
+
+dev.off()
+
+plot(
+  sort(sample_sums(ps_nocontrol_filtrado)),
+  ylab = "Sequencing depth",
+  xlab = "Samples ordered by depth",
+  main = "Sequencing depth per sample",
+  cex.lab = 1.6,   
+  cex.axis = 1.4,   
+  cex.main = 1.8    
+)
+
+```
+
+## Saving and loading 
+
+Saving of the phyloseq object and loading of data with phylogenetic distance.
+
+
+```{r}
+
+saveRDS(ps_nocontrol_filtrado_rare, "ps_nocontrol_filtrado_rare.rds")
+
+```
+
+In a separate script, the sequences from the previously generated phyloseq object were matched against a reference database with an associated phylogenetic tree and taxonomy (e.g., Greengenes2). This allowed the phylogenetic tree to be incorporated into the object and enabled analyses based on phylogenetic metrics (e.g., Faith's PD, UniFrac, etc.).
+
+```{r}
+
+nuevosdatos <- "phyloseq_objects_with_tree.Rdata"
+
+load(here("data",nuevosdatos ))
+
+```
+
+---
+
+# **Diversity analysis and correlations** 
+
+## Creation of working variables 
+
+```{r}
+
+datos_est <- as(sample_data(ps_nocontrol_filtrado_rare), "data.frame")
+datos_est$log_MPN <- log10(datos_est$MPN)
+
+Riqueza <- estimate_richness(ps_nocontrol_filtrado_rare, measures = "Observed")
+Homogeneidad <- estimate_richness(ps_nocontrol_filtrado_rare, measures = "Shannon")
+
+Faith_D <- pd(as(otu_table(new_ps), "matrix"), phy_tree(new_ps))
+datos_est$Riqueza <- Riqueza[rownames(datos_est), "Observed"]
+datos_est$Homogeneidad <- Homogeneidad[rownames(datos_est), "Shannon"]
+datos_est$Faith_D <- Faith_D[rownames(datos_est), "PD"]
+
+# Variable type checking
+
+datos_est$Componentes   <- factor(datos_est$Componentes)  
+datos_est$Tipo   <- factor(datos_est$Tipo) 
+
+
+# Data preparation for subsequent analysis”
+abundancia_rel <- transform_sample_counts(ps_nocontrol_filtrado_rare, function(x) x / sum(x))
+abundancia_rel_df <- as.data.frame(otu_table(abundancia_rel))
+
+abund_t <- t(abundancia_rel_df)
+abund_t <- abund_t %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("clade_name")
+
+abund_t <- as_tibble(abund_t)
+
+# create new IDs ‘T_Coal_001’, ‘T_Coal_002...
+n <- nrow(abund_t)
+width <- max(3, nchar(as.character(n)))                       
+new_ids <- sprintf(paste0("T_Coal_%0", width, "d"), seq_len(n))
+
+# 2) preserve the original sequence and replace clade_name with the ID
+abund_t <- abund_t %>%
+  mutate(
+    original_seq = as.character(clade_name),   
+    clade_name = new_ids                       
+  )
+
+```
+
+```{r}
+
+table(sample_data(ps_nocontrol_filtrado_rare)$Componentes)
+
+```
+
+
+## **AMicrobial Composition Analysis ** 
+
+## Microbial Composition - Bray-Curtis  
+
+
+In this section, a loop is first created to generate all the phyloseq objects for every pairwise combination. Each object contains the samples from the individual components as well as those from the corresponding pair itself.
+
+Using a second loop, the microbial composition of each of the previous objects is represented through NMDS analysis based on Bray–Curtis distances.
+
+```{r}
+
+Suelos <- c("A", "C", "D", "E", "F", "G", "H")
+pares <- combn(Suelos, 2, simplify = FALSE)
+
+# Create and save individual plots
+all_plots <- list()
+
+for (par in pares) {
+  comp1 <- par[1]
+  comp2 <- par[2]
+  Pareja <- paste0(comp1, comp2)
+  obj_pareja <- paste0("ps_nocontrol_filtrado_rare", Pareja)
+  
+  ps_filtrado_pareja <- subset_samples(
+    ps_nocontrol_filtrado_rare,
+    Componentes %in% c(comp1, comp2, Pareja)
+  )
+  assign(obj_pareja, ps_filtrado_pareja)
+}
+
+for (par in pares) {
+  comp1 <- par[1]
+  comp2 <- par[2]
+  
+  pareja <- paste0(comp1, comp2)
+  ps_filtrado_pareja <- get(paste0("ps_nocontrol_filtrado_rare", pareja))
+  ps_prop_pareja <- transform_sample_counts(ps_filtrado_pareja, function(otu) otu / sum(otu))
+  
+set.seed(123)
+  ord_nmds_bray_pareja <- ordinate(ps_prop_pareja, method = "NMDS", distance = "bray")
+  assign(paste0("ps_prop_", pareja), ps_prop_pareja)
+  assign(paste0("ord_nmds_bray_", pareja), ord_nmds_bray_pareja)
+}
+
+for (par in pares) {
+  comp1 <- par[1]
+  comp2 <- par[2]
+  pareja <- paste0(comp1, comp2)
+  
+  ps_prop_pareja <- get(paste0("ps_prop_", pareja))
+  ord_nmds_bray_pareja <- get(paste0("ord_nmds_bray_", pareja))
+  
+
+p_pareja <- plot_ordination(
+  ps_prop_pareja, ord_nmds_bray_pareja, 
+  shape = "Tipo", color = "Componentes", 
+  title = paste("NMDS Bray-Curtis")
+)
+    p_pareja$layers <- p_pareja$layers[-1]
+
+ 
+p_pareja <- p_pareja +
+  geom_point(
+    aes(fill = Componentes, shape = Tipo),
+    size = 4,
+    stroke = 0.8,
+    color = "black",
+    position = position_jitter(width = 0.09, height = 0.09)
+  ) +
+  scale_shape_manual(values = c(Individual = 22, Pareja = 21)) +
+  scale_fill_brewer(palette = "Set1") +   # o Set2 / Dark2
+  guides(
+    fill  = guide_legend(override.aes = list(shape = 21, color = "black")),
+    shape = guide_legend(override.aes = list(fill = "white", color = "black"))
+  ) +
+  theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      axis.text.x = element_text(angle = 0, hjust = 1, size = 10),
+      axis.text.y = element_text(size = 10),
+      legend.title = element_text(margin = margin(b = 10)))
+  
+  # Guardar plot individual
+  ggsave(filename = paste0("graficos/parejas/Bray-Curtis/NMDS_", pareja, ".png"), 
+         plot = p_pareja, width = 7, height = 5)
+  
+  # Guardar en lista para paneles
+  all_plots[[pareja]] <- p_pareja
+}
+
+```
+
+## Microbial Composition - Boxplots - Bray–Curtis
+
+For each combination of communities, Bray–Curtis distances are calculated to evaluate:
+
+the variability within each community (intra-group).
+the difference between each community and its mixture (inter-group).
+
+Finally, the results are represented using boxplots.
+
+```{r}
+
+Suelos <- c("A", "C", "D", "E", "F", "G", "H")
+pares <- combn(Suelos, 2, simplify = FALSE)
+
+out_dir_plots <- "graficos/parejas/cajas_BrayCurtis"
+out_dir_tables <- "parejas/bray"
+dir.create(out_dir_plots, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_dir_tables, recursive = TRUE, showWarnings = FALSE)
+
+# Change the labels if necessary
+GROUP_COL <- "Componentes"
+MIX_COL <- "Tipo"
+INDIV_LABEL <- "Individual"
+PAIR_LABEL <- "Pareja"
+TRANSFORM_TO_PROPORTIONS <- TRUE
+
+# -----------------------------
+# Function setup
+# -----------------------------
+.dist_values <- function(dist_mat, ids1, ids2 = ids1) {
+  ids1 <- intersect(ids1, rownames(dist_mat))
+  ids2 <- intersect(ids2, colnames(dist_mat))
+  if (length(ids1) == 0 || length(ids2) == 0) return(numeric(0))
+
+  if (identical(ids1, ids2)) {
+    sub <- dist_mat[ids1, ids1, drop = FALSE]
+    return(sub[upper.tri(sub, diag = FALSE)])
+  } else {
+    return(as.numeric(dist_mat[ids1, ids2, drop = FALSE]))
+  }
+}
+
+# -----------------------------
+# Calculate Bray-Curtis distances by blocks for an XY pair (default function)
+# -----------------------------
+calcular_distancias_entre_grupos <- function(ps_objeto, comp1, comp2, pareja,
+                                             group_col = "Componentes",
+                                             mix_col = "Tipo",
+                                             indiv_label = "Individual",
+                                             pair_label = "Pareja",
+                                             transform_to_proportions = TRUE) {
+  ps_use <- ps_objeto
+
+  if (transform_to_proportions) {
+    ps_use <- transform_sample_counts(ps_use, function(x) if (sum(x) > 0) x / sum(x) else x)
+  }
+
+  # Bray-Curtis distances
+  dist_df <- as.matrix(phyloseq::distance(ps_use, method = "bray"))
+
+  md <- data.frame(sample_data(ps_use), stringsAsFactors = FALSE) %>%
+    tibble::rownames_to_column("SampleID")
+
+  if (!group_col %in% colnames(md)) {
+    stop("No existe columna '", group_col, "' en sample_data(). Columnas: ",
+         paste(colnames(md), collapse = ", "))
+  }
+  if (!mix_col %in% colnames(md)) {
+    stop("No existe columna '", mix_col, "' en sample_data(). Columnas: ",
+         paste(colnames(md), collapse = ", "))
+  }
+
+  md[[group_col]] <- as.character(md[[group_col]])
+  md[[mix_col]] <- as.character(md[[mix_col]])
+
+  # Sample IDs by block
+  m1 <- md %>%
+    filter(.data[[group_col]] == comp1, .data[[mix_col]] == indiv_label) %>%
+    pull(SampleID)
+
+  m2 <- md %>%
+    filter(.data[[group_col]] == comp2, .data[[mix_col]] == indiv_label) %>%
+    pull(SampleID)
+
+  mp <- md %>%
+    filter(.data[[group_col]] == pareja, .data[[mix_col]] == pair_label) %>%
+    pull(SampleID)
+
+  out <- list()
+
+  # intragroup comp1
+  v <- .dist_values(dist_df, m1)
+  if (length(v) > 0) out[[length(out) + 1]] <- tibble(
+    Pareja = pareja,
+    Grupo = paste0(comp1, " intra"),
+    Distancia = v
+  )
+
+  # comp1 vs pair
+  v <- .dist_values(dist_df, m1, mp)
+  if (length(v) > 0) out[[length(out) + 1]] <- tibble(
+    Pareja = pareja,
+    Grupo = paste0(comp1, " vs ", pareja),
+    Distancia = v
+  )
+
+  # intragroup comp2
+  v <- .dist_values(dist_df, m2)
+  if (length(v) > 0) out[[length(out) + 1]] <- tibble(
+    Pareja = pareja,
+    Grupo = paste0(comp2, " intra"),
+    Distancia = v
+  )
+
+  # comp2 vs pair
+  v <- .dist_values(dist_df, m2, mp)
+  if (length(v) > 0) out[[length(out) + 1]] <- tibble(
+    Pareja = pareja,
+    Grupo = paste0(comp2, " vs ", pareja),
+    Distancia = v
+  )
+
+  if (length(out) == 0) return(NULL)
+  bind_rows(out)
+}
+
+# ============================================================
+# Final step: for each pair, calculate distances and save the graph 
+# ============================================================
+all_dist <- list()
+
+for (par in pares) {
+  comp1 <- par[1]
+  comp2 <- par[2]
+  pareja <- paste0(comp1, comp2)
+
+  message("Procesando pareja: ", pareja)
+
+  obj_name <- paste0("ps_nocontrol_filtrado_rare", pareja)
+  if (!exists(obj_name, inherits = TRUE)) {
+    message("  ✗ No existe objeto: ", obj_name, " (saltando)")
+    next
+  }
+
+  ps_filtrado_pareja <- get(obj_name, inherits = TRUE)
+
+  ps_filtrado_pareja <- prune_taxa(taxa_sums(ps_filtrado_pareja) > 0, ps_filtrado_pareja)
+  ps_filtrado_pareja <- prune_samples(sample_sums(ps_filtrado_pareja) > 0, ps_filtrado_pareja)
+  
+# The data to use are selected; otherwise, the default ones will be used 
+  
+  dist_data <- calcular_distancias_entre_grupos(
+    ps_objeto = ps_filtrado_pareja,
+    comp1 = comp1,
+    comp2 = comp2,
+    pareja = pareja,
+    group_col = GROUP_COL,
+    mix_col = MIX_COL,
+    indiv_label = INDIV_LABEL,
+    pair_label = PAIR_LABEL,
+    transform_to_proportions = TRANSFORM_TO_PROPORTIONS
+  )
+
+  if (is.null(dist_data) || nrow(dist_data) == 0) {
+    message("  ✗ No hay suficientes datos para ", pareja)
+    next
+  }
+
+  all_dist[[pareja]] <- dist_data
+
+  #  boxes are always ordered the same way
+  orden_grupos <- c(
+    paste0(comp1, " intra"),
+    paste0(comp1, " vs ", pareja),
+    paste0(comp2, " intra"),
+    paste0(comp2, " vs ", pareja)
+  )
+  orden_grupos <- orden_grupos[orden_grupos %in% unique(dist_data$Grupo)]
+dist_data$Grupo <- factor(dist_data$Grupo, levels = orden_grupos)
+
+colores_cajas <- c()
+for (grupo in orden_grupos) {
+  if (grepl("intra", grupo)) {
+    if (grepl(paste0("^", comp1), grupo)) {
+      colores_cajas <- c(colores_cajas, "#E74C3C")  # Rojo (comp1 intra)
+    } else {
+      colores_cajas <- c(colores_cajas, "#3498DB")  # Azul (comp2 intra)
+    }
+  } else {
+    if (grepl(paste0("^", comp1, " vs"), grupo)) {
+      colores_cajas <- c(colores_cajas, "#F39C12")  # Naranja (comp1 vs pareja)
+    } else {
+      colores_cajas <- c(colores_cajas, "#9B59B6")  # Morado (comp2 vs pareja)
+    }
+  }
+}
+names(colores_cajas) <- orden_grupos
+
+  p_box <- ggplot(dist_data, aes(x = Grupo, y = Distancia, fill = Grupo)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+    geom_jitter(width = 0.2, alpha = 0.5, size = 2, aes(color = Grupo)) +
+    scale_fill_manual(values = colores_cajas, name = "Comparación") +  #añadido nuevo
+     scale_color_manual(values = colores_cajas, guide = "none") + #añadido
+    labs(
+      title = paste("Análisis intra e inter Grupo (Distancias Bray-Curtis)"),
+      x = "Comparación de componentes",
+      y = "Distancia Bray–Curtis"
+    ) +
+    theme_minimal() +
+ theme(
+  plot.margin = margin(2, 2, 2, 2, unit = "pt"),
+  axis.title.y = element_text(size = 14),
+  axis.title.x = element_text(size = 14),
+  plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+  axis.text.x = element_text(angle = 45, hjust = 1, size = 14),
+  axis.text.y = element_text(size = 14),
+  legend.position = "none"
+)
+
+  ggsave(
+    filename = file.path(out_dir_plots, paste0("Boxplot_", pareja, ".png")),
+    plot = p_box, width = 10, height = 6, dpi = 300
+  )
+
+  message("  ✓ Guardado: ", file.path(out_dir_plots, paste0("Boxplot_", pareja, ".png")))
+}
+
+```
+
+## Microbial Composition - Unifrac
+
+In this section, a loop is first created to generate all phyloseq objects for every pairwise combination. Each object will contain the samples from the individual members and from the pair itself.  
+The second loop is then used to represent, for each of the objects above, the microbial composition using NMDS analysis with UniFrac distances.
+
+```{r}
+
+Suelos <- c("A", "C", "D", "E", "F", "G", "H")
+pares <- combn(Suelos, 2, simplify = FALSE)
+
+# Create subsets of new_ps for UniFrac
+for (par in pares) {
+  comp1 <- par[1]
+  comp2 <- par[2]
+  Pareja <- paste0(comp1, comp2)
+  
+  ps_unifrac_pareja <- subset_samples(
+    new_ps,
+    Componentes %in% c(comp1, comp2, Pareja)
+  )
+  assign(paste0("ps_unifrac_", Pareja), ps_unifrac_pareja)
+}
+
+# Create and save individual plots with Weighted UniFrac
+all_plots_unifrac_w <- list()
+
+for (par in pares) {
+  comp1 <- par[1]
+  comp2 <- par[2]
+  pareja <- paste0(comp1, comp2)
+  
+  ps_unifrac_pareja <- get(paste0("ps_unifrac_", pareja))
+  set.seed(123)
+  
+  ord_unifrac_w_pareja <- ordinate(ps_unifrac_pareja, method = "NMDS", distance = "unifrac", weighted = TRUE)
+  
+
+  p_pareja <- plot_ordination(
+  ps_unifrac_pareja, ord_unifrac_w_pareja, 
+  shape = "Tipo", color = "Componentes", 
+  title = paste("NMDS Unifrac")
+)
+    p_pareja$layers <- p_pareja$layers[-1]
+
+
+ p_pareja <- p_pareja +
+  geom_point(
+    aes(fill = Componentes, shape = Tipo),
+    size = 4,
+    stroke = 0.8,
+    color = "black",
+    position = position_jitter(width = 0.09, height = 0.09)
+  ) +
+  scale_shape_manual(values = c(Individual = 22, Pareja = 21)) +
+  scale_fill_brewer(palette = "Set1") +   # o Set2 / Dark2
+  guides(
+    fill  = guide_legend(override.aes = list(shape = 21, color = "black")),
+    shape = guide_legend(override.aes = list(fill = "white", color = "black"))
+  ) +
+  theme_minimal() +
+        theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      axis.text.x = element_text(angle = 0, hjust = 1, size = 10),
+      axis.text.y = element_text(size = 10),
+      legend.title = element_text(margin = margin(b = 10)))
+  
+  # Save individual plot
+  ggsave(filename = paste0("graficos/parejas/Unifrac/Weighted_Unifrac_NMDS_", pareja, ".png"), 
+         plot = p_pareja, width = 7, height = 5)
+  
+   # Save in a list for panels
+  all_plots_unifrac_w[[pareja]] <- p_pareja
+  
+   # Save the ordination object
+  assign(paste0("ord_unifrac_w_", pareja), ord_unifrac_w_pareja)
+  
+  message("Guardado: Weighted_Unifrac_NMDS_", pareja, ".png")
+}
+
+```
+
+## Microbial Composition - Boxplots - UniFrac 
+
+For each community combination, UniFrac distances are calculated to assess:
+
+- the variability within each community (intra-group)
+- the difference between each community and its mixture (inter-group)
+
+Finally, the results are displayed using boxplots.
+
+```{r}
+
+Suelos <- c("A", "C", "D", "E", "F", "G", "H")
+pares <- combn(Suelos, 2, simplify = FALSE)
+
+out_dir <- "graficos/parejas/cajas_unifrac"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Change the labels if necessary
+
+GROUP_COL <- "Componentes"
+MIX_COL <- "Tipo"
+INDIV_LABEL <- "Individual"  
+PAIR_LABEL  <- "Pareja"      
+
+# -----------------------------
+# Helper function: calculate distances within and between groups of samples
+# -----------------------------
+.dist_values <- function(dist_mat, ids1, ids2 = ids1) {
+  ids1 <- intersect(ids1, rownames(dist_mat))
+  ids2 <- intersect(ids2, colnames(dist_mat))
+  if (length(ids1) == 0 || length(ids2) == 0) return(numeric(0))
+
+  if (identical(ids1, ids2)) {
+    sub <- dist_mat[ids1, ids1, drop = FALSE]
+    return(sub[upper.tri(sub, diag = FALSE)])
+  } else {
+    return(as.numeric(dist_mat[ids1, ids2, drop = FALSE]))
+  }
+}
+
+# -----------------------------
+# Calculate UniFrac distances by blocks for an XY pair (default function)
+# -----------------------------
+calcular_distancias_unifrac_weighted <- function(ps_objeto, comp1, comp2, pareja,
+                                                 group_col = "Componentes",
+                                                 mix_col = "Tipo",
+                                                 indiv_label = "individual",
+                                                 pair_label = "pareja") {
+  ps_use <- ps_objeto
+
+# remove empty samples if there are any
+  ps_use <- prune_samples(sample_sums(ps_use) > 0, ps_use)
+
+  # Weighted UniFrac
+  dist_df <- as.matrix(phyloseq::distance(ps_use, method = "unifrac", weighted = TRUE))
+
+  md <- data.frame(sample_data(ps_use), stringsAsFactors = FALSE) %>%
+    tibble::rownames_to_column("SampleID")
+
+  if (!group_col %in% colnames(md)) stop("No existe columna '", group_col, "' en sample_data().")
+  if (!mix_col %in% colnames(md)) stop("No existe columna '", mix_col, "' en sample_data().")
+
+  md[[group_col]] <- as.character(md[[group_col]])
+  md[[mix_col]] <- as.character(md[[mix_col]])
+
+  m1 <- md %>% filter(.data[[group_col]] == comp1,  .data[[mix_col]] == indiv_label) %>% pull(SampleID)
+  m2 <- md %>% filter(.data[[group_col]] == comp2,  .data[[mix_col]] == indiv_label) %>% pull(SampleID)
+  mp <- md %>% filter(.data[[group_col]] == pareja, .data[[mix_col]] == pair_label)  %>% pull(SampleID)
+
+  out <- list()
+
+    # intragroup comp1
+  v <- .dist_values(dist_df, m1)
+  if (length(v) > 0) out[[length(out) + 1]] <- tibble(Grupo = paste0(comp1, " intra"), Distancia = v)
+
+    # comp1 vs pair
+
+  v <- .dist_values(dist_df, m1, mp)
+  if (length(v) > 0) out[[length(out) + 1]] <- tibble(Grupo = paste0(comp1, " vs ", pareja), Distancia = v)
+
+    # intragroup comp2
+
+  v <- .dist_values(dist_df, m2)
+  if (length(v) > 0) out[[length(out) + 1]] <- tibble(Grupo = paste0(comp2, " intra"), Distancia = v)
+
+    # comp2 vs pair
+
+  v <- .dist_values(dist_df, m2, mp)
+  if (length(v) > 0) out[[length(out) + 1]] <- tibble(Grupo = paste0(comp2, " vs ", pareja), Distancia = v)
+
+  if (length(out) == 0) return(NULL)
+  bind_rows(out)
+}
+
+# ============================================================
+# Final step: for each pair, calculate distances and save the graph 
+# ============================================================
+for (par in pares) {
+  comp1 <- par[1]
+  comp2 <- par[2]
+  pareja <- paste0(comp1, comp2)
+
+  message("Procesando pareja: ", pareja)
+
+ # Subset from the tree-containing object (new_ps)
+  ps_pair <- subset_samples(
+    new_ps,
+    Componentes %in% c(comp1, comp2, pareja)
+  )
+
+# (optional) if any taxa remain without counts after filtering
+  ps_pair <- prune_taxa(taxa_sums(ps_pair) > 0, ps_pair)
+  ps_pair <- prune_samples(sample_sums(ps_pair) > 0, ps_pair)
+
+  dist_data <- calcular_distancias_unifrac_weighted(
+    ps_objeto = ps_pair,
+    comp1 = comp1,
+    comp2 = comp2,
+    pareja = pareja,
+    group_col = GROUP_COL,
+    mix_col = MIX_COL,
+    indiv_label = INDIV_LABEL,
+    pair_label = PAIR_LABEL
+  )
+
+  if (is.null(dist_data) || nrow(dist_data) == 0) {
+    message("  ✗ No hay suficientes datos para ", pareja)
+    next
+  }
+
+  # boxes are always ordered the same way
+  orden_grupos <- c(
+    paste0(comp1, " intra"),
+    paste0(comp1, " vs ", pareja),
+    paste0(comp2, " intra"),
+    paste0(comp2, " vs ", pareja)
+  )
+  orden_grupos <- orden_grupos[orden_grupos %in% unique(dist_data$Grupo)]
+  dist_data$Grupo <- factor(dist_data$Grupo, levels = orden_grupos)
+
+  # Colours (red/blue/orange/purple)
+  colores_cajas <- c()
+  for (grupo in orden_grupos) {
+    if (grepl("intra", grupo)) {
+      if (grepl(paste0("^", comp1), grupo)) {
+        colores_cajas <- c(colores_cajas, "#E74C3C")  
+      } else {
+        colores_cajas <- c(colores_cajas, "#3498DB")  
+      }
+    } else {
+      if (grepl(paste0("^", comp1, " vs"), grupo)) {
+        colores_cajas <- c(colores_cajas, "#F39C12")  
+      } else {
+        colores_cajas <- c(colores_cajas, "#9B59B6")  
+      }
+    }
+  }
+  names(colores_cajas) <- orden_grupos
+
+  p_box <- ggplot(dist_data, aes(x = Grupo, y = Distancia, fill = Grupo)) +
+    geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+    geom_jitter(width = 0.2, alpha = 0.5, size = 2, aes(color = Grupo)) +
+    scale_fill_manual(values = colores_cajas, name = "Comparación") +  #añadido nuevo
+     scale_color_manual(values = colores_cajas, guide = "none") + #añadido
+    labs(
+      title = paste("Análisis intra e inter grupo (Distancias Unifrac)"),
+      x = "Comparación de componentes",
+      y = "Distancia UniFrac"
+    ) +
+    theme_minimal() +
+  theme(
+  plot.margin = margin(2, 2, 2, 2, unit = "pt"),
+  axis.title.y = element_text(size = 14),
+  axis.title.x = element_text(size = 14),
+  plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+  axis.text.x = element_text(angle = 45, hjust = 1, size = 14),
+  axis.text.y = element_text(size = 14),
+  legend.position = "none"
+)
+
+  ggsave(
+    filename = file.path(out_dir, paste0("Boxplot_Unifrac_", pareja, ".png")),
+    plot = p_box, width = 10, height = 6, dpi = 300
+  )
+
+  message("  ✓ Guardado: ", file.path(out_dir, paste0("Boxplot_Unifrac_", pareja, ".png")))
+}
+
+message("✓ Proceso completado. Boxplots guardados en: ", out_dir)
+
+```
+---
+
+## **ASV Analysis** 
+
+## Rainbow Plots 
+
+Rainbow plots are generated to compare ASV abundances between the pair of communities and the individual communities that compose it. First, the function is prepared; then, the different phyloseq objects are prepared with the community combinations; and finally, the function is run in a loop for all these objects.
+
+```{r}
+
+# ========================================================================
+# Function setup
+# ========================================================================
+
+# Modified from (https://github.com/silvtal/rainbow_function)
+
+# Function: rainbow_comparison_plot
+# Purpose: compare abundances across 3 treatments (left, center, right),
+# showing absence/presence combinations.
+# Main parameters:
+#  - abundance_data: data.frame (rows = taxa, columns = samples)
+#  - metadata: data.frame with treatment and sample name columns
+#  - treatment_col: name of the treatment column in metadata
+#  - center_treatment: treatment to place in the center
+#  - presence_threshold: threshold to consider a taxon 'present' in a treatment
+
+rainbow_comparison_plot <- function(
+    abundance_data,
+    metadata,
+    treatment_col,
+    sample_col = "Nombre",
+    center_treatment = NULL,
+    Resaltar_NoResidentes = FALSE,
+    output_dir = NULL,
+    show_labels = FALSE,
+    label_top_abundant = 15,
+    label_NoResidentes = 10,
+    legend_ncol = 1,
+    presence_threshold = 0,
+    line_size = 0.35
+) {
+
+    cat("[rainbow_comparison_plot] inicio\n"); flush.console()
+
+    if (!treatment_col %in% colnames(metadata)) stop("La columna de tratamiento '", treatment_col, "' no existe en metadatos")
+    if (!sample_col %in% colnames(metadata)) stop("La columna de muestra '", sample_col, "' no existe en metadatos")
+
+    treatments <- unique(metadata[[treatment_col]])
+    treatments <- treatments[!is.na(treatments)]
+    if (length(treatments) < 2) stop("Se necesitan ≥2 tratamientos")
+
+    if (is.null(center_treatment)) stop("center_treatment no puede ser NULL (necesitas el tratamiento del centro).")
+    if (!center_treatment %in% treatments) stop("center_treatment='", center_treatment, "' no está en treatments: ", paste(treatments, collapse = ", "))
+
+    if (length(treatments) != 3) stop("Esta función asume exactamente 3 tratamientos (izq, centro, der). Encontrados: ", length(treatments))
+
+  # --- Reordered to ensure center position ----
+# [left, center, right]
+    
+    if (!is.null(center_treatment) && center_treatment %in% treatments) {
+      other <- setdiff(treatments, center_treatment)
+      treatments <- c(other[1], center_treatment, other[-1])
+    }
+
+    cat("Tratamientos a comparar:", paste(treatments, collapse = ", "), "\n"); flush.console()
+    cat("Orden de tratamientos:", paste(treatments, collapse = " -> "), "\n"); flush.console()
+
+  # Prepare abundance data
+  # Ensure row names (taxa) are in a column called 'clade_name'
+    
+    if (!"clade_name" %in% colnames(abundance_data)) {
+      abundance_data <- as.data.frame(abundance_data) %>% tibble::rownames_to_column("clade_name")
+    }
+
+  # --- Get sample columns by treatment ----
+  # For each treatment, extract the list of sample names   
+    treatment_samples <- list()
+    for (trt in treatments) {
+      samp <- metadata %>%
+        dplyr::filter(!!rlang::sym(treatment_col) == trt) %>%
+        dplyr::pull(!!rlang::sym(sample_col))
+          treatment_samples[[trt]] <- unique(as.character(samp))
+      cat("   ", trt, " : ", length(treatment_samples[[trt]]), " muestras\n"); flush.console()
+    }
+   # --- Convert NA to 0 and ensure numeric values for present sample columns ----
+  # This is applied only to the abundance_data columns that appear in treatment_samples
+    
+    all_sample_cols <- unlist(treatment_samples)
+      abundance_means <- abundance_data %>%
+      dplyr::mutate(
+        dplyr::across(
+          dplyr::all_of(all_sample_cols[all_sample_cols %in% colnames(abundance_data)]),
+          ~ as.numeric(tidyr::replace_na(.x, 0))
+        )
+      )
+   # --- Calculate means by treatment (new columns) ----
+  # Create one column per treatment with the mean abundance across its samples
+    
+    for (trt in treatments) {
+      cols <- treatment_samples[[trt]]
+      cols <- cols[cols %in% colnames(abundance_means)]
+      if (length(cols) > 0) {
+        abundance_means[[trt]] <- rowMeans(dplyr::select(abundance_means, dplyr::all_of(cols)), na.rm = TRUE)
+      } else {
+        abundance_means[[trt]] <- 0
+      }
+    }
+    cat("[rainbow_comparison_plot] medias por tratamiento calculadas\n"); flush.console()
+
+# calcular total_mean y filtrar taxones sin abundancia en todos los tratamientos
+abundance_means <- abundance_means %>%
+  dplyr::mutate(
+    total_mean = rowSums(dplyr::select(., dplyr::all_of(treatments)))
+  ) %>%
+  dplyr::filter(total_mean > 0)
+
+     # --- Presence by treatment (using presence_threshold) ----
+    for (trt in treatments) {
+      abundance_means[[paste0(trt, "_present")]] <- as.integer(abundance_means[[trt]] > presence_threshold)
+    }
+
+    t1 <- treatments[1]; t2 <- treatments[2]; t3 <- treatments[3]
+    col_T1 <- rlang::sym(paste0(t1, "_present"))
+    col_T2 <- rlang::sym(paste0(t2, "_present"))
+    col_T3 <- rlang::sym(paste0(t3, "_present"))
+
+    # --- Final classification based on presence combinations ----
+# - In_all
+# - left + center
+# - right + center
+# - left + right (without center)
+# - Individual
+    
+    abundance_means <- abundance_means %>%
+      dplyr::mutate(
+        presence_sum = !!col_T1 + !!col_T2 + !!col_T3,
+        color_group_final = dplyr::case_when(
+          presence_sum == 3 ~ "In_all",
+          (!!col_T2 & !!col_T3) & ! (!!col_T1) ~ paste0(t3,"_",t2), # der + centro
+          (!!col_T2 & !!col_T1) & ! (!!col_T3) ~ paste0(t1,"_",t2), # izq + centro
+          (!!col_T1 & !!col_T3) & ! (!!col_T2) ~ paste0(t1,"_",t3), # izq + der (sin centro)
+          TRUE ~ "Individual"
+        )
+      )
+   # --- Prepare data in long format for ggplot ----
+    plot_data_long <- abundance_means %>%
+      tidyr::pivot_longer(cols = dplyr::all_of(treatments), names_to = "condition", values_to = "abundance") %>%
+      dplyr::mutate(
+        condition = factor(condition, levels = treatments),
+        condition_numeric = as.numeric(condition),
+        jitter_offset = (as.numeric(factor(clade_name)) %% 7 - 3) * 0.02,
+        condition_jitter = condition_numeric + jitter_offset
+      )
+ # --- Detect taxa present at the extremes but absent in the center:
+#     they need pseudo-abundance to draw the line in the center
+    taxa_need_center_pseudo <- abundance_means %>%
+      dplyr::filter(.data[[paste0(t1, "_present")]] == 1 &
+                    .data[[paste0(t3, "_present")]] == 1 &
+                    .data[[paste0(t2, "_present")]] == 0) %>%
+      dplyr::pull(clade_name)
+    cat("[rainbow_comparison_plot] taxa que necesitan pseudo en center:", length(taxa_need_center_pseudo), "\n"); flush.console()
+
+      # --- Filtering: keep points with abundance > 0 or taxa that need pseudo in the center ----
+    
+    plot_data_long_filtered <- plot_data_long %>%
+      dplyr::filter(abundance > 0 | clade_name %in% taxa_need_center_pseudo)
+
+      # ---Compute pseudo (minimum positive / 10) to draw a point in the center where it’s missing ----
+    min_pos <- min(plot_data_long_filtered$abundance[plot_data_long_filtered$abundance > 0], na.rm = TRUE)
+    if (!is.finite(min_pos) || min_pos <= 0) min_pos <- 1e-6
+    pseudo <- min_pos / 10
+
+    plot_data_long_filtered <- plot_data_long_filtered %>%
+      dplyr::mutate(
+        abundance_plot = dplyr::case_when(
+          abundance > 0 ~ abundance,
+          abundance == 0 & as.character(condition) == as.character(t2) & clade_name %in% taxa_need_center_pseudo ~ pseudo,
+          TRUE ~ NA_real_
+        )
+      )
+  # --- Point sizes (abundance range to sizes) ----
+
+    plot_data_long_filtered <- plot_data_long_filtered %>%
+      dplyr::mutate(
+        point_size_plot = dplyr::case_when(
+          abundance > 0 & abundance < 1e-6   ~ 1.2,
+          abundance > 0 & abundance < 0.001 ~ 1.5,
+          abundance > 0 & abundance < 0.01  ~ 2.5,
+          abundance > 0 & abundance < 0.1   ~ 3.5,
+          abundance > 0                      ~ 4.5,
+          abundance == 0 & as.character(condition) == as.character(t2) & clade_name %in% taxa_need_center_pseudo ~ 2.5,
+          TRUE ~ 1.0
+        )
+      )
+
+    cat("Usando esquema: Rainbow (sin coloreado taxonómico)\n"); flush.console()
+ # --- Color scheme: define legend levels and palette ----
+# Fixed legend order (with center first, then extremes, then all/individual)
+    legend_levels <- c(
+      paste0(t1, "_", t2),  # left + center
+      paste0(t3, "_", t2),  # right  + center
+      paste0(t1, "_", t3),  # left + right(without center)
+      "In_all",
+      "Individual"
+    )
+
+    plot_data_long_filtered <- plot_data_long_filtered %>%
+      dplyr::mutate(
+        color_group_final = factor(as.character(color_group_final), levels = legend_levels)
+      )
+  # Assign explicit colors by group (if any are missing, add gray)
+    color_scheme <- c(
+      "Individual" = "gray50",
+      setNames("#d95f02", paste0(t1, "_", t2)),
+      setNames("#1b9e77", paste0(t3, "_", t2)),
+      setNames("yellow", paste0(t1, "_", t3)),
+      "In_all" = "purple"
+    )
+
+ # if, for some reason, another key appears, assign gray
+    present_keys <- unique(na.omit(as.character(plot_data_long_filtered$color_group_final)))
+    missing_keys <- setdiff(present_keys, names(color_scheme))
+    if (length(missing_keys) > 0) {
+      color_scheme <- c(color_scheme, setNames(rep("gray60", length(missing_keys)), missing_keys))
+    }
+
+      # === DEFINE SCALE AND LOGARITHMIC WITH SECONDARY AXIS ===
+    p <- ggplot2::ggplot(plot_data_long_filtered, ggplot2::aes(x = condition_jitter, y = abundance_plot)) +
+      ggplot2::geom_line(
+        data = plot_data_long_filtered %>% dplyr::filter(!is.na(abundance_plot)),
+        ggplot2::aes(group = clade_name, color = color_group_final),
+        size = line_size, alpha = 0.5
+      ) +
+      ggplot2::geom_point(
+        data = plot_data_long_filtered %>% dplyr::filter(!is.na(abundance_plot)),
+        ggplot2::aes(color = color_group_final, size = point_size_plot),
+        alpha = 0.85
+      ) +
+      ggplot2::scale_size_identity(guide = "none") +
+      ggplot2::scale_color_manual(
+        values = color_scheme,
+        breaks = legend_levels,
+        guide = ggplot2::guide_legend(title = "Presence", ncol = legend_ncol),
+        na.value = "gray60"
+      ) +
+      ggplot2::scale_x_continuous(breaks = 1:length(treatments), labels = treatments) +
+      ggplot2::scale_y_log10(labels = scales::comma_format()) +
+      ggplot2::labs(
+        title = "ASVs relative abundance",
+        x = "Components",
+        y = "Relative abundance (log10)"
+      ) +
+      ggplot2::theme_minimal() +
+      ggplot2::theme(
+        plot.title   = ggplot2::element_text(size = 22, face = "bold", hjust = 0.5), 
+        axis.title   = ggplot2::element_text(size = 18),
+        axis.text.x  = ggplot2::element_text(size = 16, angle = 45, hjust = 1),
+        axis.text.y  = ggplot2::element_text(size = 16),
+        legend.title = ggplot2::element_text(size = 18),
+        legend.text  = ggplot2::element_text(size = 16),
+        legend.position = "right"
+      )
+
+    if (!is.null(output_dir)) {
+      dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+      fname <- paste0("rainbow_", paste(treatments, collapse = "_"), ".png")
+      ggplot2::ggsave(file.path(output_dir, fname), plot = p, width = 10, height = 8, dpi = 300)
+      cat("Plot guardado: ", fname, "\n"); flush.console()
+    }
+
+    cat("[rainbow_comparison_plot] fin\n"); flush.console()
+    return(p)
+}
+
+# ==== PAIRS ====
+letras_pool <- c("A", "C", "D", "E", "F", "G", "H")
+combinaciones <- gtools::combinations(n = length(letras_pool), r = 2, v = letras_pool)
+combinaciones <- apply(combinaciones, 1, paste0, collapse = "")
+
+# ==== Execute and save ====
+for (dos_letras in combinaciones) {
+
+  datos_filtrados <- datos_est %>%
+    mutate(Componentes = as.character(Componentes)) %>%
+    filter(grepl(paste0("^[", dos_letras, "]+$"), Componentes)) %>%
+    filter(Tipo != "trío")
+
+# get unique singles and preserve order according to the pair
+  letters_order <- strsplit(dos_letras, "")[[1]]   # ej: c("A","C")
+  singles <- unique(datos_filtrados$Componentes)
+  singles <- singles[nchar(singles) == 1]
+  singles_ordered <- intersect(letters_order, singles)
+
+  if (length(singles_ordered) != 2) {
+    message("Saltando ", dos_letras, ": faltan singles (presentes = ", paste(singles, collapse = ","), ")")
+    next
+  }
+
+  niveles_deseados <- c(singles_ordered[1], dos_letras, singles_ordered[2])
+
+  metadata_mod <- datos_filtrados %>%
+    mutate(Componentes = factor(as.character(Componentes), levels = niveles_deseados))
+
+  rainbow_comparison_plot(
+    abundance_data = abund_t,
+    metadata = metadata_mod,
+    treatment_col = "Componentes",
+    center_treatment = dos_letras,
+    Resaltar_NoResidentes = FALSE,
+    show_labels = FALSE,
+    output_dir = "graficos/parejas/rainbow",
+    legend_ncol = 1
+  )
+}
+
+```
+
+## Euler plots {#Euler}
+
+Euler diagrams are generated to compare the presence of ASVs between the pair of communities and the individual communities that make it up. First, the functions to be used are prepared. Then the phyloseq objects containing the samples from a pair and the individual communities that make it up are created, and finally the functions are run for these objects. 
+
+```{r}
+
+# ---- (1) FUNCTION: extract taxa lists by treatment
+extract_taxa_lists <- function(abundance_data, metadata, treatment_col,
+                               sample_col = "Nombre",
+                               center_treatment = NULL,
+                               presence_threshold = 0) {
+
+  treatments <- unique(metadata[[treatment_col]])
+  treatments <- treatments[!is.na(treatments)]
+
+  # Reorder: left, center (pair), right
+  if (!is.null(center_treatment) && center_treatment %in% treatments) {
+    other <- setdiff(treatments, center_treatment)
+    treatments <- c(other[1], center_treatment, other[-1])
+  }
+
+  # Ensure "clade_name"
+  if (!"clade_name" %in% colnames(abundance_data)) {
+    abundance_data <- as.data.frame(abundance_data) %>%
+      tibble::rownames_to_column("clade_name")
+  }
+
+  # Samples by treatment
+  treatment_samples <- list()
+  for (trt in treatments) {
+    samp <- metadata %>%
+      dplyr::filter(!!rlang::sym(treatment_col) == trt) %>%
+      dplyr::pull(!!rlang::sym(sample_col))
+    treatment_samples[[trt]] <- unique(as.character(samp))
+  }
+
+  # Prepare table (NA -> 0) only in present sample columns
+  all_sample_cols <- unlist(treatment_samples)
+  abundance_means <- abundance_data %>%
+    dplyr::mutate(
+      dplyr::across(
+        dplyr::all_of(all_sample_cols[all_sample_cols %in% colnames(abundance_data)]),
+        ~ as.numeric(tidyr::replace_na(.x, 0))
+      )
+    )
+
+ # Means by treatment
+  for (trt in treatments) {
+    cols <- treatment_samples[[trt]]
+    cols <- cols[cols %in% colnames(abundance_means)]
+    if (length(cols) > 0) {
+      abundance_means[[trt]] <- rowMeans(dplyr::select(abundance_means, dplyr::all_of(cols)), na.rm = TRUE)
+    } else {
+      abundance_means[[trt]] <- 0
+    }
+  }
+
+# Lists of present taxa
+  taxa_lists <- list()
+  for (trt in treatments) {
+    taxa_lists[[trt]] <- abundance_means %>%
+      dplyr::filter(!!rlang::sym(trt) > presence_threshold) %>%
+      dplyr::pull(clade_name)
+  }
+
+  list(taxa_lists = taxa_lists, treatments = treatments)
+}
+
+# ---- (2) FUNCTION: generate and save proportional Euler for a pair
+make_euler_for_pair <- function(dos_letras,
+                                datos_est,
+                                abund_t,
+                                out_dir = "graficos/parejas/venn_eulerr",
+                                presence_threshold = 0,
+                                sample_col = "Nombre") {
+
+  # Filer
+  datos_filtrados <- datos_est %>%
+    dplyr::mutate(Componentes = as.character(Componentes)) %>%
+    dplyr::filter(grepl(paste0("^[", dos_letras, "]+$"), Componentes)) %>%
+    dplyr::filter(Tipo != "trío")
+
+# Order levels: single1, pair, single2
+  letters_order <- strsplit(dos_letras, "")[[1]]
+  singles <- unique(datos_filtrados$Componentes)
+  singles <- singles[nchar(singles) == 1]
+  singles_ordered <- intersect(letters_order, singles)
+
+  if (length(singles_ordered) != 2) {
+    message("Saltando ", dos_letras, ": faltan singles (presentes = ", paste(singles, collapse = ","), ")")
+    return(invisible(NULL))
+  }
+
+  niveles_deseados <- c(singles_ordered[1], dos_letras, singles_ordered[2])
+
+  metadata_mod <- datos_filtrados %>%
+    dplyr::mutate(Componentes = factor(as.character(Componentes), levels = niveles_deseados))
+
+  # Extract taxa lists
+  result <- extract_taxa_lists(
+    abundance_data = abund_t,
+    metadata = metadata_mod,
+    treatment_col = "Componentes",
+    sample_col = sample_col,
+    center_treatment = dos_letras,
+    presence_threshold = presence_threshold
+  )
+
+  # Proportional Euler (from lists)
+  fit <- eulerr::euler(result$taxa_lists)
+
+ # Save PNG
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  out_file <- file.path(out_dir, paste0("euler_", dos_letras, ".png"))
+
+  ragg::agg_png(filename = out_file, width = 1200, height = 1200, res = 200)
+
+
+print(plot(
+  fit,
+  fills = c("#d95f02", "purple", "#1b9e77"),
+  alpha = 0.5,
+  labels = list(font = 2, cex = 1.3),
+  quantities = list(font = 2, cex = 1.3),
+  main = list(label = "ASVs compartidos", font = 2, cex = 1.6)
+))
+
+  grDevices::dev.off()
+
+  message("✓ Euler guardado: ", out_file)
+  invisible(out_file)
+}
+
+# ---- (3) EXECUTION: all pairs
+letras_pool <- c("A", "C", "D", "E", "F", "G", "H")
+combinaciones <- gtools::combinations(n = length(letras_pool), r = 2, v = letras_pool)
+combinaciones <- apply(combinaciones, 1, paste0, collapse = "")
+
+out_files <- lapply(
+  combinaciones,
+  make_euler_for_pair,
+  datos_est = datos_est,
+  abund_t = abund_t,
+  out_dir = "graficos/parejas/venn_eulerr",
+  presence_threshold = 0,
+  sample_col = "Nombre"
+)
+```
+---
+
+## Panel preparation
+
+For each combination of two communities and their pair, a panel is created with all the previous plots. The panel title includes the two individual communities and the community that wins the matchup.
+
+```{r}
+
+make_panel_pair_6 <- function(
+  pareja,
+  titulo = NULL,
+  bray_nmds_path    = paste0("graficos/parejas/Bray-Curtis/NMDS_", pareja, ".png"),
+  unifrac_nmds_path = paste0("graficos/parejas/Unifrac/Weighted_Unifrac_NMDS_", pareja, ".png"),
+  bray_box_path     = paste0("graficos/parejas/cajas_BrayCurtis/Boxplot_", pareja, ".png"),
+  unifrac_box_path  = paste0("graficos/parejas/cajas_unifrac/Boxplot_Unifrac_", pareja, ".png"),
+  euler_path        = paste0("graficos/parejas/venn_eulerr/euler_", pareja, ".png"),
+  rainbow_dir       = "graficos/parejas/rainbow",
+  out_path          = paste0("graficos/parejas/paneles_6pruebas/Panel_6_", pareja, ".png")
+) {
+  message("Procesando pareja: ", pareja)
+
+  
+  dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
+
+  find_rainbow_file <- function(pareja, rainbow_dir = "graficos/parejas/rainbow") {
+  pat_mid <- paste0("rainbow_.*_", pareja, "_.*\\.png$")
+  files_mid <- list.files(rainbow_dir, pattern = pat_mid, full.names = TRUE)
+  if (length(files_mid) >= 1) return(files_mid[1])
+
+  a <- substr(pareja, 1, 1); b <- substr(pareja, 2, 2)
+  pat_any <- paste0("rainbow_.*", a, ".*", b, ".*\\.png$")
+  files_any <- list.files(rainbow_dir, pattern = pat_any, full.names = TRUE)
+  if (length(files_any) >= 1) return(files_any[1])
+
+  NA_character_
+}
+  rainbow_path <- find_rainbow_file(pareja, rainbow_dir = rainbow_dir)
+
+  paths <- c(
+    bray_nmds_path, unifrac_nmds_path,
+    rainbow_path,
+    bray_box_path, unifrac_box_path,
+    euler_path
+  )
+  names(paths) <- c("bray_nmds", "unifrac_nmds", "rainbow", "bray_box", "unifrac_box", "euler")
+
+  if (any(is.na(paths)) || any(!file.exists(paths[!is.na(paths)]))) {
+    missing <- paths[is.na(paths) | !file.exists(paths)]
+    message("Saltando ", pareja, " (faltan archivos):\n  - ", paste(missing, collapse = "\n  - "))
+    return(invisible(NULL))
+  }
+
+  read_and_fit <- function(path, size = "1200x900") {
+    img <- image_read(path)
+    img <- image_background(img, "white")
+    img <- image_resize(img, paste0(size, ">"))
+    img <- image_border(img, "white", "20x20")
+    img
+  }
+
+  label_outside <- function(img, txt, band_h = 60) {
+    w <- image_info(img)$width
+    band <- image_blank(width = w, height = band_h, color = "white")
+    band <- image_annotate(
+      band, txt, gravity = "northwest",
+      size = 45, color = "black", weight = 700, location = "+20+10"
+    )
+    image_append(c(band, img), stack = TRUE)
+  }
+
+  read_and_fit_stretchY <- function(path, size = "1200x900", stretchY = 1.15) {
+    img <- image_read(path)
+    img <- image_background(img, "white")
+    img <- image_resize(img, paste0(size, ">"))
+
+    info <- image_info(img)
+    new_w <- info$width
+    new_h <- round(info$height * stretchY)
+
+    img <- image_resize(img, paste0(new_w, "x", new_h, "!"))
+    img <- image_extent(img, size, gravity = "center", color = "white")
+    img <- image_border(img, "white", "20x20")
+    img
+  }
+  
+  bray_nmds    <- read_and_fit(bray_nmds_path,    "1200x900")
+  unifrac_nmds <- read_and_fit(unifrac_nmds_path, "1200x900")
+  bray_box    <- read_and_fit(bray_box_path,    "1200x900")
+  unifrac_box <- read_and_fit(unifrac_box_path, "1200x900")
+  rainbow <- read_and_fit(rainbow_path, "1200x900")
+  
+  euler <- image_read(euler_path)
+  euler <- image_background(euler, "white")
+  euler <- image_resize(euler, "850x850")
+  euler <- image_extent(euler, "1200x900", gravity = "center", color = "white")
+  euler <- image_border(euler, "white", "20x20")
+
+  bray_nmds    <- label_outside(bray_nmds,    "A)")
+  unifrac_nmds <- label_outside(unifrac_nmds, "B)")
+  bray_box     <- label_outside(bray_box,     "C)")
+  unifrac_box  <- label_outside(unifrac_box,  "D)")
+  euler        <- label_outside(euler,        "E)")
+  rainbow      <- label_outside(rainbow,      "F)")
+  
+  #   top    <- image_append(c(bray_nmds, unifrac_nmds, euler))
+  # bottom <- image_append(c(bray_box, unifrac_box, rainbow))
+  # panel  <- image_append(c(top, bottom), stack = TRUE)
+
+row1 <- image_append(c(bray_nmds,    unifrac_nmds))   # A | B
+row2 <- image_append(c(bray_box,     unifrac_box))    # C | D
+row3 <- image_append(c(euler,        rainbow))        # E | F
+
+panel <- image_append(c(row1, row2, row3), stack = TRUE)
+
+  panel <- image_border(panel, "white", "0x110")
+  panel <- image_annotate(
+    panel, titulo,
+    gravity = "north",
+    size = 60, color = "black", weight = 700
+  )
+
+  image_write(panel, out_path, format = "png")
+  message("✓ Panel creado: ", out_path)
+  invisible(out_path)
+}
+
+#Adjust according to the results obtained
+titulos <- c(
+  "AC" = "Comparación A vs C: ganador A",
+  "AD" = "Comparación A vs D: ganador D",
+  "AE" = "Comparación A vs E: ganador E",
+  "AF" = "Comparación A vs F: ganador F",
+  "AG" = "Comparación A vs G: ganador A",
+  "AH" = "Comparación A vs H: no hay ganador",
+  "CD" = "Comparación C vs D: ganador D",
+  "CE" = "Comparación C vs E: ganador E",
+  "CF" = "Comparación C vs F: ganador F",
+  "CG" = "Comparación C vs G:no hay ganador",
+  "CH" = "Comparación C vs H: ganador H",
+  "DE" = "Comparación D vs E: ganador E",
+  "DF" = "Comparación D vs F: ganador D",
+  "DG" = "Comparación D vs G: ganador D",
+  "DH" = "Comparación D vs H: no hay ganador",
+  "EF" = "Comparación E vs F: ganador E",
+  "EG" = "Comparación E vs G: ganador E",
+  "EH" = "Comparación E vs H: ganador H",
+  "FG" = "Comparación F vs G: ganador F",
+  "FH" = "Comparación F vs H: no hay ganador",
+  "GH" = "Comparación G vs H: ganador H"
+)
+
+
+Suelos <- c("A","C","D","E","F","G","H")
+pares <- combn(Suelos, 2, simplify = FALSE)
+parejas <- vapply(pares, \(x) paste0(x[1], x[2]), character(1))
+
+out_files_6pruebas <- lapply(parejas, function(p) {
+  make_panel_pair_6(
+    pareja = p,
+    titulo = titulos[[p]]  
+  )
+})
+```
+---
+
+## Results network 
+
+Using the results of the matchups between the individual communities, a network of combinations is generated showing the winner of each matchup.
+
+```{r}
+
+txt <- c(
+  "A gana a C",
+  "D gana a A",
+  "E gana a A",
+  "F gana a A",
+  "A gana a G",
+  "A empata con H",
+  "D gana a C",
+  "E gana a C",
+  "F gana a C",
+  "C empata con G",
+  "H gana a C",
+  "E gana a D",
+  "D gana a F",
+  "D gana a G",
+  "D empata con H",
+  "E gana a F",
+  "E gana a G",
+  "E gana a H",
+  "F gana a G",
+  "F empata con H",
+  "H gana a G"
+)
+
+# Parse to edge data frame
+edges <- lapply(txt, function(x) {
+  if (str_detect(x, " defeats ")) {
+    m <- str_match(x, "^\\s*([A-Z])\\s+gana a\\s+([A-Z])\\s*$")
+    data.frame(from = m[2], to = m[3], Resultado = "win", stringsAsFactors = FALSE)
+  } else if (str_detect(x, " draft with ")) {
+    m <- str_match(x, "^\\s*([A-Z])\\s+draws  with\\s+([A-Z])\\s*$")
+    # tie = two directionss
+    rbind(
+      data.frame(from = m[2], to = m[3], Resultado = "Empate", stringsAsFactors = FALSE),
+      data.frame(from = m[3], to = m[2], Resultado = "Empate", stringsAsFactors = FALSE)
+    )
+  } else {
+    stop(paste("No entiendo esta línea:", x))
+  }
+}) |> bind_rows()
+
+edges
+
+
+g <- graph_from_data_frame(edges, directed = TRUE)
+
+tg <- as_tbl_graph(g)
+
+set.seed(1)
+red_parejas <- ggraph(tg, layout = "fr") +
+  geom_edge_link(
+    aes(color = Resultado, linetype = Resultado),
+    arrow = arrow(length = unit(3, "mm")),
+    end_cap = circle(4, "mm"),
+    edge_width = 0.8,
+    alpha = 0.9
+  ) +
+  geom_node_point(size = 8, color = "white") +
+  geom_node_text(aes(label = name), size = 6) +
+  scale_edge_color_manual(values = c(Gana = "steelblue3", Empate = "gray60")) +
+  scale_edge_linetype_manual(values = c(Gana = "solid", Empate = "solid")) +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 16),
+    legend.text = element_text(size = 14),
+    plot.title = element_text(size = 20, face = "bold")
+  ) +
+  ggtitle("Red dirigida de resultados de coalescencia")
+
+ggsave("graficos/red_resultados.png", plot = red_parejas, width = 10, height = 5, dpi = 300, bg ="white")
+
+
+```
+
+

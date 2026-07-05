@@ -1,0 +1,1561 @@
+---
+title: "New analyses"
+author: "Daniel Aguirre"
+date: "2026-06-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(phyloseq)
+library(dplyr)
+library(tibble)
+
+setwd("C:/Users/DA.5015582/OneDrive - UAM/TRABAJO/Abiertos/Learning/Assembly")
+
+ps <- readRDS("ps_nocontrol_filtrado_rare.rds")
+metadata <- data.frame(sample_data(ps))
+otu_mat <- as(otu_table(ps), "matrix")
+if (!taxa_are_rows(ps)) otu_mat <- t(otu_mat)
+taxonomy <- as.data.frame(tax_table(ps))
+
+asv_prevalence <- rowSums(otu_mat > 0)
+asv_total_abundance <- rowSums(otu_mat)
+```
+
+```{r create-asv-context-table, message=FALSE, warning=FALSE}
+
+library(tidyr)
+
+## Extract metadata
+metadata <- data.frame(sample_data(ps)) %>%
+  rownames_to_column("SampleID") %>%
+  select(SampleID, Componentes)
+
+## Extract ASV table
+otu_mat <- as(otu_table(ps), "matrix")
+
+if (!taxa_are_rows(ps)) {
+  otu_mat <- t(otu_mat)
+}
+
+## Convert counts to relative abundance
+## Since all samples are rarefied to the same depth, this is counts / 23394
+otu_rel <- sweep(otu_mat, 2, colSums(otu_mat), "/")
+
+## Long ASV table: one row per ASV x sample
+asv_long <- as.data.frame(otu_rel) %>%
+  rownames_to_column("ASV") %>%
+  pivot_longer(
+    cols = -ASV,
+    names_to = "SampleID",
+    values_to = "rel_abundance"
+  ) %>%
+  left_join(metadata, by = "SampleID")
+
+## Summary per ASV x inoculum context
+asv_context_summary <- asv_long %>%
+  group_by(ASV, Componentes) %>%
+  summarise(
+    n_samples = n(),
+    prevalence = sum(rel_abundance > 0),
+    prevalence_prop = prevalence / n_samples,
+    mean_abundance = mean(rel_abundance),
+    median_abundance = median(rel_abundance),
+    max_abundance = max(rel_abundance),
+    .groups = "drop"
+  )
+
+## Add taxonomy
+taxonomy <- as.data.frame(tax_table(ps)) %>%
+  rownames_to_column("ASV")
+
+asv_context_summary_tax <- asv_context_summary %>%
+  left_join(taxonomy, by = "ASV")
+
+## Quick checks
+dim(asv_long)
+dim(asv_context_summary_tax)
+
+print(head(asv_long, 10))
+print(head(asv_context_summary_tax, 10))
+
+metadata_check <- data.frame(sample_data(ps)) |>
+  tibble::rownames_to_column("SampleID")
+
+table(metadata_check$Componentes)
+
+asv_context_summary_tax |>
+  dplyr::filter(mean_abundance > 0) |>
+  dplyr::arrange(desc(mean_abundance)) |>
+  print(n = 20)
+
+## Save tables
+write.csv(asv_long, "asv_long_relative_abundance.csv", row.names = FALSE)
+write.csv(asv_context_summary_tax, "asv_context_summary_tax.csv", row.names = FALSE)
+
+```
+
+```{r}
+
+## Filter ASVs already present in asv_long / asv_context_summary_tax
+## Criterion: retain ASVs reaching >= 0.1% relative abundance in at least 2 samples.
+## Rationale: this removes very rare/spurious ASVs while keeping taxa with evidence of reproducible ecological establishment.
+
+#RESULT= 423 ASVs
+asv_filter_summary <- asv_long %>%
+  group_by(ASV) %>%
+  summarise(
+    n_samples_above_0.1percent = sum(rel_abundance >= 0.001),
+    max_rel_abundance = max(rel_abundance),
+    .groups = "drop"
+  )
+
+asvs_kept <- asv_filter_summary %>%
+  filter(n_samples_above_0.1percent >= 2) %>%
+  pull(ASV)
+
+asv_long_filtered <- asv_long %>%
+  filter(ASV %in% asvs_kept)
+
+asv_context_summary_tax_filtered <- asv_context_summary_tax %>%
+  filter(ASV %in% asvs_kept)
+
+cat("Original ASVs:", length(unique(asv_long$ASV)), "\n")
+cat("Filtered ASVs:", length(unique(asv_long_filtered$ASV)), "\n")
+
+write.csv(asv_long_filtered,
+          "asv_long_relative_abundance_filtered.csv",
+          row.names = FALSE)
+
+write.csv(asv_context_summary_tax_filtered,
+          "asv_context_summary_tax_filtered.csv",
+          row.names = FALSE)
+
+```
+
+```{r rank-abundance-global}
+## ============================================================
+## Rank-abundance analyses using the unfiltered ASV table
+## Input object: asv_long
+## ============================================================
+
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+
+## ------------------------------------------------------------
+## 1. Global rank-abundance curves, all samples together
+## ------------------------------------------------------------
+
+rank_abundance <- asv_long %>%
+  filter(rel_abundance > 0) %>%
+  group_by(SampleID) %>%
+  arrange(desc(rel_abundance), .by_group = TRUE) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+p_rank_all <- ggplot(rank_abundance,
+                     aes(x = rank,
+                         y = rel_abundance,
+                         group = SampleID)) +
+  geom_line(alpha = 0.05, linewidth = 0.3) +
+  scale_y_log10() +
+  labs(
+    x = "Rank",
+    y = "Relative abundance",
+    title = "Global rank-abundance distribution"
+  ) +
+  theme_bw()
+
+p_rank_all
+
+ggsave(
+  "rank_abundance_all_unfiltered.png",
+  plot = p_rank_all,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+
+## ------------------------------------------------------------
+## 2. Global rank-abundance envelope, all samples together
+## ------------------------------------------------------------
+
+rank_summary <- rank_abundance %>%
+  group_by(rank) %>%
+  summarise(
+    q05 = quantile(rel_abundance, 0.05, na.rm = TRUE),
+    q25 = quantile(rel_abundance, 0.25, na.rm = TRUE),
+    median = median(rel_abundance, na.rm = TRUE),
+    q75 = quantile(rel_abundance, 0.75, na.rm = TRUE),
+    q95 = quantile(rel_abundance, 0.95, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+p_envelope <- ggplot(rank_summary, aes(x = rank)) +
+  geom_ribbon(aes(ymin = q05, ymax = q95), alpha = 0.15) +
+  geom_ribbon(aes(ymin = q25, ymax = q75), alpha = 0.3) +
+  geom_line(aes(y = median), linewidth = 0.8) +
+  scale_y_log10() +
+  labs(
+    x = "Rank",
+    y = "Relative abundance",
+    title = "Rank-abundance envelope across all samples"
+  ) +
+  theme_bw()
+
+p_envelope
+
+ggsave(
+  "rank_abundance_all_envelope_unfiltered.png",
+  plot = p_envelope,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+
+## ------------------------------------------------------------
+## 3. Rank-abundance envelopes by inoculum complexity
+## ------------------------------------------------------------
+
+rank_abundance_complexity <- asv_long %>%
+  filter(rel_abundance > 0) %>%
+  mutate(
+    Complexity = case_when(
+      nchar(Componentes) == 1 ~ "Single",
+      nchar(Componentes) == 2 ~ "Pair",
+      nchar(Componentes) == 3 ~ "Triplet",
+      TRUE ~ NA_character_
+    ),
+    Complexity = factor(Complexity, levels = c("Single", "Pair", "Triplet"))
+  ) %>%
+  filter(!is.na(Complexity)) %>%
+  group_by(SampleID, Complexity) %>%
+  arrange(desc(rel_abundance), .by_group = TRUE) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+rank_summary_complexity <- rank_abundance_complexity %>%
+  group_by(Complexity, rank) %>%
+  summarise(
+    q05 = quantile(rel_abundance, 0.05, na.rm = TRUE),
+    q25 = quantile(rel_abundance, 0.25, na.rm = TRUE),
+    median = median(rel_abundance, na.rm = TRUE),
+    q75 = quantile(rel_abundance, 0.75, na.rm = TRUE),
+    q95 = quantile(rel_abundance, 0.95, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+p_envelope_complexity <- ggplot(rank_summary_complexity, aes(x = rank)) +
+  geom_ribbon(aes(ymin = q05, ymax = q95), alpha = 0.15) +
+  geom_ribbon(aes(ymin = q25, ymax = q75), alpha = 0.3) +
+  geom_line(aes(y = median), linewidth = 0.8) +
+  scale_y_log10() +
+  facet_grid(Complexity ~ ., scales = "fixed") +
+  labs(
+    x = "Rank",
+    y = "Relative abundance",
+    title = "Rank-abundance envelopes by inoculum complexity"
+  ) +
+  theme_bw()
+
+
+p_envelope_complexity
+
+ggsave(
+  "rank_abundance_envelope_by_complexity_unfiltered.png",
+  plot = p_envelope_complexity,
+  width = 8,
+  height = 10,
+  dpi = 300
+)
+
+
+## ------------------------------------------------------------
+## 4. Overlapping envelopes by inoculum complexity
+## ------------------------------------------------------------
+# 
+# p_envelope_overlap <- ggplot(rank_summary_complexity,
+#                              aes(x = rank,
+#                                  color = Complexity,
+#                                  fill = Complexity)) +
+#   geom_ribbon(aes(ymin = q05, ymax = q95),
+#               alpha = 0.12,
+#               color = NA) +
+#   geom_ribbon(aes(ymin = q25, ymax = q75),
+#               alpha = 0.22,
+#               color = NA) +
+#   geom_line(aes(y = median),
+#             linewidth = 0.9) +
+#   scale_y_log10() +
+#   scale_color_manual(values = c(
+#     "Single" = "#1b9e77",
+#     "Pair" = "#d95f02",
+#     "Triplet" = "#7570b3"
+#   )) +
+#   scale_fill_manual(values = c(
+#     "Single" = "#1b9e77",
+#     "Pair" = "#d95f02",
+#     "Triplet" = "#7570b3"
+#   )) +
+#   labs(
+#     x = "Rank",
+#     y = "Relative abundance",
+#     title = "Overlapping rank-abundance envelopes by inoculum complexity",
+#     color = "Complexity",
+#     fill = "Complexity"
+#   ) +
+#   theme_bw()
+# 
+# p_envelope_overlap
+# 
+# ggsave(
+#   "rank_abundance_envelope_complexity_overlap_unfiltered.png",
+#   plot = p_envelope_overlap,
+#   width = 8,
+#   height = 6,
+#   dpi = 300
+# )
+
+
+
+
+p_envelope_overlap <- ggplot(rank_summary_complexity,
+                             aes(x = rank,
+                                 color = Complexity,
+                                 fill = Complexity)) +
+  geom_ribbon(aes(ymin = q05, ymax = q95),
+              alpha = 0.12,
+              color = NA) +
+  geom_ribbon(aes(ymin = q25, ymax = q75),
+              alpha = 0.22,
+              color = NA) +
+  geom_line(aes(y = median),
+            linewidth = 0.9) +
+  scale_y_log10() +
+  scale_color_manual(values = c(
+    "Single" = "#1b9e77",
+    "Pair" = "#d95f02",
+    "Triplet" = "#7570b3"
+  )) +
+  scale_fill_manual(values = c(
+    "Single" = "#1b9e77",
+    "Pair" = "#d95f02",
+    "Triplet" = "#7570b3"
+  )) +
+  labs(
+    x = "Rank",
+    y = "Relative abundance",
+    title = NULL,
+    color = "Complexity",
+    fill = "Complexity"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = c(0.66, 0.35),
+    legend.background = element_rect(
+      fill = scales::alpha("white", 0.75),
+      colour = NA
+    )
+  )
+
+## ------------------------------------------------------------
+## 5. Inset plot: same analysis but only ASVs >1%
+## ------------------------------------------------------------
+
+rank_abundance_gt1 <- asv_long %>%
+  filter(rel_abundance > 0.01) %>%
+  mutate(
+    Complexity = case_when(
+      nchar(Componentes) == 1 ~ "Single",
+      nchar(Componentes) == 2 ~ "Pair",
+      nchar(Componentes) == 3 ~ "Triplet",
+      TRUE ~ NA_character_
+    ),
+    Complexity = factor(Complexity, levels = c("Single", "Pair", "Triplet"))
+  ) %>%
+  filter(!is.na(Complexity)) %>%
+  group_by(SampleID, Complexity) %>%
+  arrange(desc(rel_abundance), .by_group = TRUE) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+rank_summary_gt1 <- rank_abundance_gt1 %>%
+  group_by(Complexity, rank) %>%
+  summarise(
+    q05 = quantile(rel_abundance, 0.05, na.rm = TRUE),
+    q25 = quantile(rel_abundance, 0.25, na.rm = TRUE),
+    median = median(rel_abundance, na.rm = TRUE),
+    q75 = quantile(rel_abundance, 0.75, na.rm = TRUE),
+    q95 = quantile(rel_abundance, 0.95, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+p_inset <- ggplot(rank_summary_gt1,
+                  aes(x = rank,
+                      color = Complexity,
+                      fill = Complexity)) +
+  geom_ribbon(aes(ymin = q05, ymax = q95),
+              alpha = 0.12,
+              color = NA) +
+  geom_ribbon(aes(ymin = q25, ymax = q75),
+              alpha = 0.22,
+              color = NA) +
+  geom_line(aes(y = median), linewidth = 0.7) +
+  scale_y_log10() +
+  scale_color_manual(values = c(
+    "Single" = "#1b9e77",
+    "Pair" = "#d95f02",
+    "Triplet" = "#7570b3"
+  )) +
+  scale_fill_manual(values = c(
+    "Single" = "#1b9e77",
+    "Pair" = "#d95f02",
+    "Triplet" = "#7570b3"
+  )) +
+  labs(
+    x = "Rank",
+    y = NULL,
+    title = ">1%"
+  ) +
+  theme_bw(base_size = 8) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 9),
+    axis.title.x = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )
+
+p_combined <- ggdraw() +
+  draw_plot(p_envelope_overlap) +
+  draw_plot(
+    p_inset,
+    x = 0.45,
+    y = 0.52,
+    width = 0.40,
+    height = 0.40
+  )
+
+p_combined
+
+ggsave(
+  "rank_abundance_envelope_complexity_overlap_with_gt1_inset_unfiltered.png",
+  plot = p_combined,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+
+
+
+
+
+
+
+## ------------------------------------------------------------
+## 6. Cumulative abundance: ASVs needed to reach 50% and 90%
+## ------------------------------------------------------------
+
+cumulative_rank_abundance <- asv_long %>%
+  filter(rel_abundance > 0) %>%
+  group_by(SampleID) %>%
+  arrange(desc(rel_abundance), .by_group = TRUE) %>%
+  mutate(
+    rank = row_number(),
+    cumulative_abundance = cumsum(rel_abundance)
+  ) %>%
+  ungroup()
+
+n_asvs_summary <- cumulative_rank_abundance %>%
+  group_by(SampleID) %>%
+  summarise(
+    n_asvs_50 = min(rank[cumulative_abundance >= 0.50]),
+    n_asvs_90 = min(rank[cumulative_abundance >= 0.90]),
+    .groups = "drop"
+  )
+
+summary_stats <- n_asvs_summary %>%
+  summarise(
+    median_50 = median(n_asvs_50, na.rm = TRUE),
+    q25_50 = quantile(n_asvs_50, 0.25, na.rm = TRUE),
+    q75_50 = quantile(n_asvs_50, 0.75, na.rm = TRUE),
+    median_90 = median(n_asvs_90, na.rm = TRUE),
+    q25_90 = quantile(n_asvs_90, 0.25, na.rm = TRUE),
+    q75_90 = quantile(n_asvs_90, 0.75, na.rm = TRUE)
+  )
+
+print(summary_stats)
+```
+
+```{r bray-nmds-pcoa, message=FALSE, warning=FALSE}
+
+set.seed(123)
+
+## ============================================================
+## 1. NMDS with all samples
+##    Bray-Curtis, labels only, no points
+## ============================================================
+
+ord_nmds_bray_all <- ordinate(
+  ps,
+  method = "NMDS",
+  distance = "bray",
+  trymax = 100
+)
+
+
+## ============================================================
+## 2. NMDS using only single-inoculum samples
+##    Important: subset first, then run NMDS on this subset
+## ============================================================
+
+ps_singles <- subset_samples(ps, nchar(Componentes) == 1)
+
+## Optional: remove ASVs absent from the singles subset
+ps_singles <- prune_taxa(taxa_sums(ps_singles) > 0, ps_singles)
+
+ord_nmds_bray_singles <- ordinate(
+  ps_singles,
+  method = "NMDS",
+  distance = "bray",
+  trymax = 100
+)
+
+
+
+ord_df_all <- plot_ordination(ps, ord_nmds_bray_all, type = "samples", justDF = TRUE)
+
+p_nmds_bray_all <- ggplot(ord_df_all, aes(x = NMDS1, y = NMDS2)) +
+  geom_text(aes(label = Componentes), size = 3, check_overlap = TRUE) +
+  labs(title = "NMDS - Bray-Curtis, all samples") +
+  theme_bw()
+
+ggsave(
+  "NMDS_Bray_Curtis_all_labels_only.png",
+  plot = p_nmds_bray_all,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+ord_df_singles <- plot_ordination(ps_singles, ord_nmds_bray_singles,
+                                  type = "samples", justDF = TRUE)
+
+p_nmds_bray_singles <- ggplot(ord_df_singles,
+                              aes(x = NMDS1, y = NMDS2)) +
+  geom_text(aes(label = Componentes, color = Componentes),
+            size = 4, check_overlap = TRUE) +
+  labs(title = "NMDS - Bray-Curtis, single inocula only",
+       color = "Component") +
+  theme_bw()
+
+ggsave(
+  "NMDS_Bray_Curtis_singles_labels_only.png",
+  plot = p_nmds_bray_singles,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+
+pA <- p_nmds_bray_singles +
+  labs(title = NULL, color = NULL) +
+  theme(legend.position = "none") +
+  annotate("text", x = -Inf, y = Inf, label = "A",
+           hjust = -0.7, vjust = 1.5, fontface = "bold", size = 6)
+
+pB <- p_nmds_bray_all +
+  labs(title = NULL) +
+  theme(legend.position = "none") +
+  annotate("text", x = -Inf, y = Inf, label = "B",
+           hjust = -0.7, vjust = 1.5, fontface = "bold", size = 6)
+
+p_nmds_combined <- cowplot::plot_grid(
+  pA, pB,
+  nrow = 1,
+  labels = NULL,
+  align = "hv",
+  rel_widths = c(1, 1.25)
+)
+
+ggsave(
+  "NMDS_Bray_Curtis_singles_and_all.png",
+  plot = p_nmds_combined,
+  width = 12,
+  height = 5,
+  dpi = 300
+)
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+top2_pair_freq <- asv_long %>%
+  left_join(
+    asv_context_summary_tax %>%
+      select(ASV, Genus) %>%
+      distinct(),
+    by = "ASV"
+  ) %>%
+  filter(rel_abundance > 0) %>%
+  mutate(Genus = ifelse(is.na(Genus), "Unassigned", Genus)) %>%
+  group_by(SampleID) %>%
+  arrange(desc(rel_abundance), .by_group = TRUE) %>%
+  slice_head(n = 2) %>%
+  mutate(rank = row_number()) %>%
+  ungroup() %>%
+  select(SampleID, rank, Genus) %>%
+  tidyr::pivot_wider(
+    names_from = rank,
+    values_from = Genus,
+    names_prefix = "rank"
+  ) %>%
+  mutate(pair = paste(rank1, rank2, sep = " - ")) %>%
+  count(pair, name = "n_samples") %>%
+  mutate(percent = 100 * n_samples / sum(n_samples)) %>%
+  arrange(desc(percent))
+
+print(top2_pair_freq, n = 20)
+
+#No Pseudomonas domination:
+
+non_pseudomonas_top2 <- asv_long %>%
+  left_join(
+    asv_context_summary_tax %>%
+      select(ASV, Genus) %>%
+      distinct(),
+    by = "ASV"
+  ) %>%
+  filter(rel_abundance > 0) %>%
+  mutate(Genus = ifelse(is.na(Genus), "Unassigned", Genus)) %>%
+  group_by(SampleID) %>%
+  arrange(desc(rel_abundance), .by_group = TRUE) %>%
+  slice_head(n = 2) %>%
+  summarise(
+    top1 = Genus[1],
+    top2 = Genus[2],
+    Componentes = first(Componentes),
+    both_non_pseudomonas = all(Genus != "Pseudomonas"),
+    .groups = "drop"
+  ) %>%
+  filter(both_non_pseudomonas)
+
+print(non_pseudomonas_top2, n = Inf)
+
+top2_ACD <- asv_long %>%
+  left_join(
+    asv_context_summary_tax %>%
+      select(ASV, Genus) %>%
+      distinct(),
+    by = "ASV"
+  ) %>%
+  filter(rel_abundance > 0) %>%
+  filter(Componentes %in% c("A", "C", "D")) %>%
+  mutate(Genus = ifelse(is.na(Genus), "Unassigned", Genus)) %>%
+  group_by(SampleID) %>%
+  arrange(desc(rel_abundance), .by_group = TRUE) %>%
+  slice_head(n = 2) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+print(top2_ACD, n = Inf)
+
+
+
+asv_ids <- asv_long %>%
+  group_by(ASV) %>%
+  summarise(global_abundance = sum(rel_abundance), .groups = "drop") %>%
+  arrange(desc(global_abundance)) %>%
+  mutate(ASV_ID = paste0("ASV_", row_number()))
+
+print(head(asv_ids, 20))
+
+
+
+top2_asvs_global <- asv_long %>%
+  left_join(asv_ids, by = "ASV") %>%
+  filter(rel_abundance > 0) %>%
+  group_by(SampleID) %>%
+  arrange(desc(rel_abundance), .by_group = TRUE) %>%
+  slice_head(n = 2) %>%
+  mutate(rank = row_number()) %>%
+  ungroup() %>%
+  count(rank, ASV_ID, name = "n_samples") %>%
+  group_by(rank) %>%
+  mutate(percent = 100 * n_samples / sum(n_samples)) %>%
+  arrange(rank, desc(percent))
+
+print(top2_asvs_global, n = 20)
+
+
+top2_selected <- asv_long %>%
+  left_join(asv_ids, by = "ASV") %>%
+  left_join(
+    asv_context_summary_tax %>%
+      select(ASV, Genus) %>%
+      distinct(),
+    by = "ASV"
+  ) %>%
+  filter(rel_abundance > 0) %>%
+  filter(Componentes %in% c("G", "A", "C", "D", "CG", "ADG")) %>%
+  mutate(Genus = ifelse(is.na(Genus), "Unassigned", Genus)) %>%
+  group_by(SampleID) %>%
+  arrange(desc(rel_abundance), .by_group = TRUE) %>%
+  slice_head(n = 2) %>%
+  mutate(rank = row_number()) %>%
+  ungroup() %>%
+  select(SampleID, Componentes, rank, ASV_ID, Genus, rel_abundance)
+
+top2_selected_wide <- top2_selected %>%
+  tidyr::pivot_wider(
+    names_from = rank,
+    values_from = c(ASV_ID, Genus, rel_abundance),
+    names_glue = "{.value}_rank{rank}"
+  ) %>%
+  arrange(Componentes)
+
+print(top2_selected_wide, n = Inf)
+
+
+asv_focus_singles <- asv_long %>%
+  left_join(asv_ids, by = "ASV") %>%
+  filter(nchar(Componentes) == 1) %>%
+  filter(ASV_ID %in% c("ASV_1", "ASV_2", "ASV_9", "ASV_10")) %>%
+  select(SampleID, Componentes, ASV_ID, rel_abundance)
+
+print(asv_focus_singles, n = Inf)
+
+ggplot(asv_focus_singles,
+       aes(x = Componentes,
+           y = rel_abundance,
+           fill = ASV_ID)) +
+  geom_boxplot() +
+  facet_wrap(~ASV_ID, scales = "free_y") +
+  theme_bw()
+
+
+pseudomonas_abundance_top10 <- asv_long %>%
+  group_by(ASV) %>%
+  summarise(mean_rel_abundance = mean(rel_abundance), .groups = "drop") %>%
+  left_join(
+    asv_context_summary_tax %>%
+      select(ASV, Genus) %>%
+      distinct(),
+    by = "ASV"
+  ) %>%
+  filter(Genus == "Pseudomonas") %>%
+  left_join(asv_ids, by = "ASV") %>%
+  arrange(as.numeric(gsub("ASV_", "", ASV_ID))) %>%
+  slice_head(n = 10)
+
+p_pseudomonas_top10 <- ggplot(
+  pseudomonas_abundance_top10,
+  aes(
+    x = reorder(ASV_ID, as.numeric(gsub("ASV_", "", ASV_ID))),
+    y = mean_rel_abundance
+  )
+) +
+  geom_col() +
+  geom_text(
+    aes(label = round(mean_rel_abundance, 3)),
+    vjust = -0.3,
+    size = 3
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    x = "Pseudomonas ASV",
+    y = "Mean relative abundance",
+    title = "Top 10 Pseudomonas ASVs (out of 186 total)"
+  )
+
+p_pseudomonas_top10
+
+ggsave(
+  "top10_pseudomonas_asvs_mean_relative_abundance.png",
+  plot = p_pseudomonas_top10,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+```
+
+```{r dominant-asv-neighbourhood-family-and-genus-ranks-2-19, message=FALSE, warning=FALSE}
+
+library(dplyr)
+library(tidyr)
+
+## ------------------------------------------------------------
+## 1. Add ASV IDs and taxonomy
+## ------------------------------------------------------------
+
+asv_long_tax <- asv_long %>%
+  left_join(asv_ids, by = "ASV") %>%
+  left_join(
+    asv_context_summary_tax %>%
+      select(ASV, Family, Genus) %>%
+      distinct(),
+    by = "ASV"
+  ) %>%
+  mutate(
+    Family = ifelse(is.na(Family), "Unassigned", Family),
+    Genus = ifelse(is.na(Genus), "Unassigned", Genus)
+  )
+
+## ------------------------------------------------------------
+## 2. Rank ASVs within each sample
+## ------------------------------------------------------------
+
+asv_ranked <- asv_long_tax %>%
+  filter(rel_abundance > 0) %>%
+  group_by(SampleID) %>%
+  arrange(desc(rel_abundance), .by_group = TRUE) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+## ------------------------------------------------------------
+## 3. Identify samples where top1 is ASV_1, ASV_2, ASV_9 or ASV_10
+## ------------------------------------------------------------
+
+top1_samples <- asv_ranked %>%
+  filter(rank == 1) %>%
+  select(SampleID, top1_ASV = ASV_ID) %>%
+  filter(top1_ASV %in% c("ASV_1", "ASV_2", "ASV_9", "ASV_10"))
+
+## ------------------------------------------------------------
+## 4. Function to summarise neighbourhoods for Family or Genus
+## ------------------------------------------------------------
+
+make_neighbourhood_table <- function(tax_level) {
+  
+  tax_level <- rlang::sym(tax_level)
+  
+  neighbourhood_summary <- asv_ranked %>%
+    inner_join(top1_samples, by = "SampleID") %>%
+    filter(rank >= 2, rank <= 19) %>%
+    group_by(top1_ASV, SampleID, taxon = !!tax_level) %>%
+    summarise(
+      taxon_abundance_ranks_2_19 = sum(rel_abundance),
+      .groups = "drop"
+    ) %>%
+    group_by(top1_ASV, taxon) %>%
+    summarise(
+      mean_abundance = mean(taxon_abundance_ranks_2_19),
+      .groups = "drop"
+    ) %>%
+    group_by(top1_ASV) %>%
+    arrange(desc(mean_abundance), .by_group = TRUE) %>%
+    slice_head(n = 10) %>%
+    ungroup()
+  
+  neighbourhood_table <- neighbourhood_summary %>%
+    mutate(
+      percent = round(100 * mean_abundance, 2)
+    ) %>%
+    select(taxon, top1_ASV, percent) %>%
+    pivot_wider(
+      names_from = top1_ASV,
+      values_from = percent
+    ) %>%
+    arrange(taxon)
+  
+  list(
+    summary = neighbourhood_summary,
+    table = neighbourhood_table
+  )
+}
+
+## ------------------------------------------------------------
+## 5. Family neighbourhood table
+## ------------------------------------------------------------
+
+family_neighbourhood <- make_neighbourhood_table("Family")
+
+family_neighbourhood_summary <- family_neighbourhood$summary
+family_neighbourhood_table <- family_neighbourhood$table
+
+print(family_neighbourhood_table, n = Inf)
+
+write.csv(
+  family_neighbourhood_summary,
+  "family_neighbourhood_top1_ASV_1_2_9_10_ranks_2_19_summary.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  family_neighbourhood_table,
+  "family_neighbourhood_top1_ASV_1_2_9_10_ranks_2_19_table.csv",
+  row.names = FALSE
+)
+
+## ------------------------------------------------------------
+## 6. Genus neighbourhood table
+## ------------------------------------------------------------
+
+genus_neighbourhood <- make_neighbourhood_table("Genus")
+
+genus_neighbourhood_summary <- genus_neighbourhood$summary
+genus_neighbourhood_table <- genus_neighbourhood$table
+
+print(genus_neighbourhood_table, n = Inf)
+
+write.csv(
+  genus_neighbourhood_summary,
+  "genus_neighbourhood_top1_ASV_1_2_9_10_ranks_2_19_summary.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  genus_neighbourhood_table,
+  "genus_neighbourhood_top1_ASV_1_2_9_10_ranks_2_19_table.csv",
+  row.names = FALSE
+)
+
+```
+
+
+```{r pearson-correlation-intra-inter-combinations, message=FALSE, warning=FALSE}
+
+
+library(phyloseq)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(cowplot)
+
+## ASV abundance matrix: samples as rows, ASVs as columns
+otu_mat <- as(otu_table(ps), "matrix")
+
+if (taxa_are_rows(ps)) {
+  otu_mat <- t(otu_mat)
+}
+
+## Metadata with explicit SampleID column
+metadata_corr <- data.frame(sample_data(ps)) %>%
+  rownames_to_column("SampleID") %>%
+  select(SampleID, Componentes) %>%
+  mutate(
+    Complexity = case_when(
+      nchar(Componentes) == 1 ~ "Single",
+      nchar(Componentes) == 2 ~ "Pair",
+      nchar(Componentes) == 3 ~ "Triplet",
+      TRUE ~ NA_character_
+    ),
+    Complexity = factor(Complexity, levels = c("Single", "Pair", "Triplet"))
+  )
+
+## Pearson correlation between samples
+corr_mat <- cor(t(otu_mat), method = "pearson")
+
+## Convert correlation matrix to pairwise table
+sample_pairs <- as.data.frame(as.table(corr_mat)) %>%
+  rename(sample1 = Var1, sample2 = Var2, corr = Freq) %>%
+  mutate(
+    sample1 = as.character(sample1),
+    sample2 = as.character(sample2)
+  ) %>%
+  filter(sample1 < sample2) %>%
+  left_join(metadata_corr, by = c("sample1" = "SampleID")) %>%
+  rename(
+    comb1 = Componentes,
+    complexity1 = Complexity
+  ) %>%
+  left_join(metadata_corr, by = c("sample2" = "SampleID")) %>%
+  rename(
+    comb2 = Componentes,
+    complexity2 = Complexity
+  ) %>%
+  mutate(
+    comparison = ifelse(
+      comb1 == comb2,
+      "Intra-combination",
+      "Inter-combination"
+    ),
+    intra_complexity = ifelse(
+      comparison == "Intra-combination",
+      as.character(complexity1),
+      NA_character_
+    ),
+    intra_complexity = factor(
+      intra_complexity,
+      levels = c("Single", "Pair", "Triplet")
+    )
+  )
+
+## Summary statistics
+corr_stats <- sample_pairs %>%
+  group_by(comparison) %>%
+  summarise(
+    n = n(),
+    mean_corr = mean(corr, na.rm = TRUE),
+    sd_corr = sd(corr, na.rm = TRUE),
+    median_corr = median(corr, na.rm = TRUE),
+    q25_corr = quantile(corr, 0.25, na.rm = TRUE),
+    q75_corr = quantile(corr, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(corr_stats)
+
+## Main density plot
+p_corr_density <- ggplot(sample_pairs,
+                         aes(x = corr,
+                             fill = comparison,
+                             color = comparison)) +
+  geom_density(alpha = 0.25, linewidth = 0.8) +
+  scale_fill_manual(values = c(
+    "Intra-combination" = "#4D4D4D",
+    "Inter-combination" = "#BDBDBD"
+  )) +
+  scale_color_manual(values = c(
+    "Intra-combination" = "#252525",
+    "Inter-combination" = "#737373"
+  )) +
+  theme_bw() +
+  labs(
+    x = "Pearson correlation",
+    y = "Density",
+    title = "Within- vs between-combination Pearson correlations",
+    fill = "Comparison",
+    color = "Comparison"
+  )
+
+## Inset
+p_inset <- sample_pairs %>%
+  filter(comparison == "Intra-combination") %>%
+  ggplot(aes(x = corr,
+             fill = intra_complexity,
+             color = intra_complexity)) +
+  geom_density(alpha = 0.30, linewidth = 0.6) +
+  scale_fill_manual(values = c(
+    "Single" = "#1b9e77",
+    "Pair" = "#d95f02",
+    "Triplet" = "#7570b3"
+  )) +
+  scale_color_manual(values = c(
+    "Single" = "#1b9e77",
+    "Pair" = "#d95f02",
+    "Triplet" = "#7570b3"
+  )) +
+  theme_bw(base_size = 8) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "Intra only",
+    fill = "Complexity",
+    color = "Complexity"
+  ) +
+  theme(
+    legend.position = "top",
+    legend.direction = "horizontal",
+    legend.title = element_text(size = 7),
+    legend.text = element_text(size = 6),
+    plot.title = element_text(size = 9),
+    axis.text = element_text(size = 7),
+    panel.grid.minor = element_blank()
+  )
+
+## Combined plot
+p_corr_density_inset <- ggdraw() +
+  draw_plot(p_corr_density) +
+  draw_plot(
+    p_inset,
+    x = 0.09,
+    y = 0.55,
+    width = 0.38,
+    height = 0.38
+  )
+
+p_corr_density_inset
+
+ggsave(
+  "pearson_correlation_intra_inter_density_with_inset.png",
+  plot = p_corr_density_inset,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+
+
+
+## ------------------------------------------------------------
+## 7. Final version: no title + legend inside below inset
+## ------------------------------------------------------------
+
+p_corr_density_final <- ggplot(sample_pairs,
+                               aes(x = corr,
+                                   fill = comparison,
+                                   color = comparison)) +
+  geom_density(alpha = 0.25, linewidth = 0.8) +
+  scale_fill_manual(values = c(
+    "Intra-combination" = "#4D4D4D",
+    "Inter-combination" = "#BDBDBD"
+  )) +
+  scale_color_manual(values = c(
+    "Intra-combination" = "#252525",
+    "Inter-combination" = "#737373"
+  )) +
+  theme_bw() +
+  labs(
+    x = "Pearson correlation",
+    y = "Density",
+    title = NULL,
+    fill = "Comparison",
+    color = "Comparison"
+  ) +
+  theme(
+    legend.position = c(0.28, 0.4),
+    legend.background = element_rect(
+      fill = scales::alpha("white", 0.75),
+      colour = NA
+    ),
+    legend.title = element_text(size = 9),
+    legend.text = element_text(size = 8)
+  )
+
+p_corr_density_inset_final <- ggdraw() +
+  draw_plot(p_corr_density_final) +
+  draw_plot(
+    p_inset,
+    x = 0.09,
+    y = 0.55,
+    width = 0.38,
+    height = 0.38
+  )
+
+p_corr_density_inset_final
+
+ggsave(
+  "pearson_correlation_intra_inter_density_with_inset_final.png",
+  plot = p_corr_density_inset_final,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+```
+
+### Distance to the compositional Bray–Curtis centroid
+
+This chunk defines the global rhizosphere attractor as the mean compositional profile across all samples. Bray–Curtis distances are then calculated from each sample to this compositional centroid. Pair and triplet communities are shown as density distributions, while each single inoculum is represented by its letter positioned at its mean distance to the centroid.
+
+```{r}
+library(phyloseq)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(vegan)
+
+## ------------------------------------------------------------
+## 1. Extract ASV abundance matrix
+## ------------------------------------------------------------
+
+otu_mat <- as(otu_table(ps), "matrix")
+
+## Samples as rows, ASVs as columns
+if (taxa_are_rows(ps)) {
+  otu_mat <- t(otu_mat)
+}
+
+## Convert to relative abundance, just to be explicit
+otu_rel <- sweep(otu_mat, 1, rowSums(otu_mat), "/")
+
+## ------------------------------------------------------------
+## 2. Define compositional centroid
+## ------------------------------------------------------------
+## The centroid is the mean relative abundance profile across all samples.
+
+centroid_profile <- colMeans(otu_rel)
+
+## Add centroid as an extra pseudo-sample
+otu_rel_with_centroid <- rbind(
+  otu_rel,
+  Global_centroid = centroid_profile
+)
+
+## ------------------------------------------------------------
+## 3. Bray-Curtis distances to centroid
+## ------------------------------------------------------------
+
+bray_to_centroid <- vegan::vegdist(
+  otu_rel_with_centroid,
+  method = "bray"
+)
+
+bray_centroid_mat <- as.matrix(bray_to_centroid)
+
+distance_to_centroid <- bray_centroid_mat[
+  rownames(otu_rel),
+  "Global_centroid"
+]
+
+## ------------------------------------------------------------
+## 4. Metadata + distance to centroid
+## ------------------------------------------------------------
+
+metadata_centroid <- data.frame(sample_data(ps)) %>%
+  rownames_to_column("SampleID") %>%
+  mutate(
+    Complexity = case_when(
+      nchar(Componentes) == 1 ~ "Single",
+      nchar(Componentes) == 2 ~ "Pair",
+      nchar(Componentes) == 3 ~ "Triplet",
+      TRUE ~ NA_character_
+    ),
+    Complexity = factor(Complexity, levels = c("Single", "Pair", "Triplet")),
+    distance_to_centroid = distance_to_centroid[SampleID]
+  )
+
+save(metadata_centroid, file = "metadata_centroid.RData")
+## ------------------------------------------------------------
+## 5. Mean distance of each single inoculum
+## ------------------------------------------------------------
+
+single_mean_distances <- metadata_centroid %>%
+  filter(Complexity == "Single") %>%
+  group_by(Componentes) %>%
+  summarise(
+    mean_distance_to_centroid = mean(distance_to_centroid, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(single_mean_distances)
+
+## ------------------------------------------------------------
+## 6. Plot
+## ------------------------------------------------------------
+
+p_centroid_distance <- ggplot() +
+  geom_density(
+    data = metadata_centroid %>%
+      filter(Complexity %in% c("Pair", "Triplet")),
+    aes(
+      x = distance_to_centroid,
+      fill = Complexity,
+      color = Complexity
+    ),
+    alpha = 0.25,
+    linewidth = 0.8
+  ) +
+  geom_text(
+    data = single_mean_distances,
+    aes(
+      x = mean_distance_to_centroid,
+      y = 3,
+      label = Componentes
+    ),
+    size = 5,
+    fontface = "bold"
+  ) +
+scale_color_manual(values = c(
+  "Pair" = "#d95f02",
+  "Triplet" = "#7570b3"
+)) +
+scale_fill_manual(values = c(
+  "Pair" = "#d95f02",
+  "Triplet" = "#7570b3"
+)) +
+  labs(
+    x = "Bray-Curtis distance to compositional centroid",
+    y = "Density",
+    #title = "Distance to the global rhizosphere compositional centroid",
+    #subtitle = "Pairs and triplets as density curves; single inocula shown as mean positions",
+    color = "Complexity",
+    fill = "Complexity"
+  ) +
+theme_bw() +
+  theme(
+    legend.position = c(0.78, 0.80),
+    legend.background = element_rect(
+      fill = scales::alpha("white", 0.75),
+      colour = NA
+    )
+  )
+
+p_centroid_distance
+
+ggsave(
+  "bray_curtis_distance_to_compositional_centroid.png",
+  plot = p_centroid_distance,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+```
+
+
+### ASV-level assembly trait space in 2D
+
+This chunk uses the filtered ASV table, retaining only ASVs reaching at least 0.1% relative abundance in at least two samples. For each retained ASV, the source set is defined from the single-inoculum communities. We then calculate three assembly axes: conditional persistence, mean retention in eligible mixtures, and context dependence. The resulting ASV-level trait space is visualized as three 2D plots. Each ASV is shown by its numeric ASV label, with text size proportional to source breadth and colour indicating taxonomic family.
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+
+## ------------------------------------------------------------
+## 1. Filter ASVs: >=0.1% relative abundance in at least 2 samples
+## ------------------------------------------------------------
+
+asv_filter_summary <- asv_long %>%
+  group_by(ASV) %>%
+  summarise(
+    n_samples_above_threshold = sum(rel_abundance >= 0.001),
+    .groups = "drop"
+  )
+
+asvs_kept <- asv_filter_summary %>%
+  filter(n_samples_above_threshold >= 2) %>%
+  pull(ASV)
+
+asv_long_filt <- asv_long %>%
+  filter(ASV %in% asvs_kept)
+
+## ------------------------------------------------------------
+## 2. Add ASV_ID and taxonomy
+## ------------------------------------------------------------
+
+taxonomy_info <- asv_context_summary_tax %>%
+  select(ASV, Family, Genus) %>%
+  distinct() %>%
+  mutate(
+    Family = ifelse(is.na(Family), "Unassigned", Family),
+    Genus = ifelse(is.na(Genus), "Unassigned", Genus)
+  )
+
+asv_long_filt <- asv_long_filt %>%
+  left_join(asv_ids, by = "ASV") %>%
+  left_join(taxonomy_info, by = "ASV") %>%
+  mutate(
+    ASV_number = as.numeric(gsub("ASV_", "", ASV_ID))
+  )
+
+## ------------------------------------------------------------
+## 3. Mean abundance per ASV x context
+## ------------------------------------------------------------
+
+asv_context_mean <- asv_long_filt %>%
+  group_by(ASV, ASV_ID, ASV_number, Family, Genus, Componentes) %>%
+  summarise(
+    mean_abundance = mean(rel_abundance),
+    present = mean_abundance >= 0.001,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    context_size = nchar(Componentes)
+  )
+
+## ------------------------------------------------------------
+## 4. Define source set from singles
+## ------------------------------------------------------------
+
+source_set <- asv_context_mean %>%
+  filter(context_size == 1, present) %>%
+  group_by(ASV, ASV_ID, ASV_number, Family, Genus) %>%
+  summarise(
+    source_components = list(Componentes),
+    source_breadth = n(),
+    .groups = "drop"
+  )
+
+## Keep only ASVs detected in at least one single inoculum
+asv_context_mean_sources <- asv_context_mean %>%
+  inner_join(
+    source_set,
+    by = c("ASV", "ASV_ID", "ASV_number", "Family", "Genus")
+  )
+
+## ------------------------------------------------------------
+## 5. Evaluate only eligible mixtures
+## ------------------------------------------------------------
+
+eligible_mixtures <- asv_context_mean_sources %>%
+  filter(context_size %in% c(2, 3)) %>%
+  rowwise() %>%
+  mutate(
+    mixture_components = list(strsplit(Componentes, "")[[1]]),
+    eligible = length(
+      intersect(
+        unlist(source_components),
+        unlist(mixture_components)
+      )
+    ) > 0
+  ) %>%
+  ungroup() %>%
+  filter(eligible)
+
+## ------------------------------------------------------------
+## 6. Add best source-single abundance for each eligible mixture
+## ------------------------------------------------------------
+
+single_abundances <- asv_context_mean_sources %>%
+  filter(context_size == 1) %>%
+  select(
+    ASV,
+    single_component = Componentes,
+    single_abundance = mean_abundance
+  )
+
+eligible_mixtures <- eligible_mixtures %>%
+  rowwise() %>%
+  mutate(
+    best_source_single_abundance = max(
+      single_abundances$single_abundance[
+        single_abundances$ASV == ASV &
+          single_abundances$single_component %in% unlist(mixture_components)
+      ],
+      na.rm = TRUE
+    )
+  ) %>%
+  ungroup()
+
+## ------------------------------------------------------------
+## 7. Calculate retention per ASV x eligible mixture
+## ------------------------------------------------------------
+
+epsilon <- 1e-6
+
+eligible_mixtures <- eligible_mixtures %>%
+  mutate(
+    retention = log2(
+      (mean_abundance + epsilon) /
+        (best_source_single_abundance + epsilon)
+    )
+  )
+
+## ------------------------------------------------------------
+## 8. ASV-level assembly axes
+## ------------------------------------------------------------
+
+asv_trait_space <- eligible_mixtures %>%
+  group_by(ASV, ASV_ID, ASV_number, Family, Genus, source_breadth) %>%
+  summarise(
+    n_eligible_mixtures = n(),
+    conditional_persistence = mean(present),
+    mean_retention = mean(retention, na.rm = TRUE),
+    context_dependence = sd(retention, na.rm = TRUE),
+    max_abundance_in_mixtures = max(mean_abundance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    context_dependence = ifelse(is.na(context_dependence), 0, context_dependence)
+  )
+
+print(asv_trait_space, n = 30)
+
+write.csv(
+  asv_trait_space,
+  "asv_assembly_trait_space.csv",
+  row.names = FALSE
+)
+
+## ------------------------------------------------------------
+## 9. Collapse taxonomy to top 10 families + Other
+## ------------------------------------------------------------
+
+top10_families <- asv_trait_space %>%
+  group_by(Family) %>%
+  summarise(
+    total_weight = sum(max_abundance_in_mixtures, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_weight)) %>%
+  slice_head(n = 10) %>%
+  pull(Family)
+
+asv_trait_space_plot <- asv_trait_space %>%
+  mutate(
+    Family_plot = ifelse(Family %in% top10_families, Family, "Other")
+  )
+
+## palette
+family_levels <- c(sort(setdiff(unique(asv_trait_space_plot$Family_plot), "Other")), "Other")
+
+family_colors <- setNames(
+  c(scales::hue_pal()(length(family_levels)-1), "grey75"),
+  family_levels
+)
+
+## ------------------------------------------------------------
+## 10. Plot 1: retention vs persistence
+## ------------------------------------------------------------
+
+p1 <- ggplot(
+  asv_trait_space_plot,
+  aes(
+    x = mean_retention,
+    y = conditional_persistence,
+    size = source_breadth,
+    color = Family_plot
+  )
+) +
+  geom_point(alpha = 0.75) +
+  scale_color_manual(values = family_colors) +
+  theme_bw() +
+  labs(
+    x = "Mean retention",
+    y = "Conditional persistence",
+    #title = "Retention vs persistence",
+    color = "Family",
+    size = "Source breadth"
+  )
+
+## ------------------------------------------------------------
+## 11. Plot 2: retention vs context dependence
+## ------------------------------------------------------------
+
+p2 <- ggplot(
+  asv_trait_space_plot,
+  aes(
+    x = mean_retention,
+    y = context_dependence,
+    size = source_breadth,
+    color = Family_plot
+  )
+) +
+  geom_point(alpha = 0.75) +
+  scale_color_manual(values = family_colors) +
+  theme_bw() +
+  labs(
+    x = "Mean retention",
+    y = "Context dependence",
+    #title = "Retention vs context dependence",
+    color = "Family",
+    size = "Source breadth"
+  )
+
+## ------------------------------------------------------------
+## 12. Combine with shared legend
+## ------------------------------------------------------------
+
+p_combined <- (p1 + p2) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+p_combined
+
+ggsave(
+  "asv_trait_space_2plots.png",
+  plot = p_combined,
+  width = 12,
+  height = 6,
+  dpi = 300
+)
+
+```
+
+
+
+
+
+
