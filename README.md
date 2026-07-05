@@ -10,11 +10,11 @@ The sequences from Illumina were pre-processed by removing the primers and then 
 
 - [Phylogenetic_tree.Rmd](./Phylogenetic_tree.Rmd): This script adds the phylogenetic tree to the phyloseq object to enable phylogenetic diversity analyses.
 
-- [Assembly.Rmd](./Assembly.Rmd):This script carries out all acommunity assembly analyses.
+- [Assembly.Rmd](./Assembly.Rmd): This script carries out all acommunity assembly analyses.
 
-- [ASV_vs_weight.Rmd](./ASV_vs_weight.Rmd):This script analyses the effect of specific ASVs vs weight
+- [ASV_vs_weight.Rmd](./ASV_vs_weight.Rmd): This script analyses the effect of specific ASVs vs weight
 
-- [Dominance.Rmd](./Dominance.Rmd):This script analyses the single and pairwise coalescence experiments and reconstructs the dominance network.
+- [Dominance.Rmd](./Dominance.Rmd): This script analyses the single and pairwise coalescence experiments and reconstructs the dominance network.
 
-- [Processing_and_statistics.Rmd](./Processing_and_statistics.Rmd):This script carries out the initial processing and comunnity vs weight and load statistics.
+- [Processing_and_statistics.Rmd](./Processing_and_statistics.Rmd): This script carries out the initial processing and comunnity vs weight and load statistics.
  
