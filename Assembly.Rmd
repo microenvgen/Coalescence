@@ -551,7 +551,7 @@ ord_df_singles <- plot_ordination(ps_singles, ord_nmds_bray_singles,
 p_nmds_bray_singles <- ggplot(ord_df_singles,
                               aes(x = NMDS1, y = NMDS2)) +
   geom_text(aes(label = Componentes, color = Componentes),
-            size = 4, check_overlap = TRUE) +
+            size = 4, check_overlap = FALSE) +
   labs(title = "NMDS - Bray-Curtis, single inocula only",
        color = "Component") +
   theme_bw()
@@ -593,6 +593,231 @@ ggsave(
   dpi = 300
 )
 
+
+
+
+
+
+
+
+## ============================================================
+## PCoA using the same phyloseq objects and Bray–Curtis
+## dissimilarity used for the NMDS ordinations
+## ============================================================
+
+## Figure 5B: all samples
+ord_pcoa_bray_all <- ordinate(
+  ps,
+  method = "PCoA",
+  distance = "bray"
+)
+
+## Figure 5A: single-inoculum samples
+ord_pcoa_bray_singles <- ordinate(
+  ps_singles,
+  method = "PCoA",
+  distance = "bray"
+)
+
+## ============================================================
+## Extract PCoA coordinates
+## ============================================================
+
+pcoa_df_all <- plot_ordination(
+  ps,
+  ord_pcoa_bray_all,
+  type = "samples",
+  justDF = TRUE
+)
+
+pcoa_df_singles <- plot_ordination(
+  ps_singles,
+  ord_pcoa_bray_singles,
+  type = "samples",
+  justDF = TRUE
+)
+
+## Check coordinate names
+colnames(pcoa_df_all)
+colnames(pcoa_df_singles)
+
+## In phyloseq PCoA outputs, the first coordinates are normally
+## called Axis.1 and Axis.2. Rename them for plotting.
+names(pcoa_df_all)[
+  names(pcoa_df_all) == "Axis.1"
+] <- "PCoA1"
+
+names(pcoa_df_all)[
+  names(pcoa_df_all) == "Axis.2"
+] <- "PCoA2"
+
+names(pcoa_df_singles)[
+  names(pcoa_df_singles) == "Axis.1"
+] <- "PCoA1"
+
+names(pcoa_df_singles)[
+  names(pcoa_df_singles) == "Axis.2"
+] <- "PCoA2"
+
+## ============================================================
+## Percentages represented by PCoA axes
+## ============================================================
+
+variance_all <- 100 *
+  ord_pcoa_bray_all$values$Relative_eig[1:2]
+
+variance_singles <- 100 *
+  ord_pcoa_bray_singles$values$Relative_eig[1:2]
+
+pcoa_axis_percentages <- data.frame(
+  Panel = c(
+    "Figure 5A: single-inoculum communities",
+    "Figure 5B: all communities"
+  ),
+  PCoA1_percent = c(
+    variance_singles[1],
+    variance_all[1]
+  ),
+  PCoA2_percent = c(
+    variance_singles[2],
+    variance_all[2]
+  )
+)
+
+print(pcoa_axis_percentages)
+
+write.csv(
+  pcoa_axis_percentages,
+  "Figure5_PCoA_axis_percentages.csv",
+  row.names = FALSE
+)
+
+## ============================================================
+## Figure 5B equivalent: all samples
+## ============================================================
+
+p_pcoa_bray_all <- ggplot(
+  pcoa_df_all,
+  aes(x = PCoA1, y = PCoA2)
+) +
+  geom_text(
+    aes(label = Componentes),
+    size = 3,
+    check_overlap = FALSE
+  ) +
+  labs(
+    title = "PCoA – Bray–Curtis, all samples",
+    x = paste0(
+      "PCoA1 (",
+      round(variance_all[1], 1),
+      "%)"
+    ),
+    y = paste0(
+      "PCoA2 (",
+      round(variance_all[2], 1),
+      "%)"
+    )
+  ) +
+  theme_bw()
+
+ggsave(
+  "PCoA_Bray_Curtis_all_labels_only.png",
+  plot = p_pcoa_bray_all,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+## ============================================================
+## Figure 5A equivalent: single-inoculum samples
+## ============================================================
+
+p_pcoa_bray_singles <- ggplot(
+  pcoa_df_singles,
+  aes(x = PCoA1, y = PCoA2)
+) +
+  geom_text(
+    aes(
+      label = Componentes,
+      color = Componentes
+    ),
+    size = 4,
+    check_overlap = FALSE
+  ) +
+  labs(
+    title = "PCoA – Bray–Curtis, single inocula only",
+    x = paste0(
+      "PCoA1 (",
+      round(variance_singles[1], 1),
+      "%)"
+    ),
+    y = paste0(
+      "PCoA2 (",
+      round(variance_singles[2], 1),
+      "%)"
+    ),
+    color = "Component"
+  ) +
+  theme_bw()
+
+ggsave(
+  "PCoA_Bray_Curtis_singles_labels_only.png",
+  plot = p_pcoa_bray_singles,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+## ============================================================
+## Combined PCoA figure
+## ============================================================
+
+pA_pcoa <- p_pcoa_bray_singles +
+  labs(title = NULL, color = NULL) +
+  theme(legend.position = "none") +
+  annotate(
+    "text",
+    x = -Inf,
+    y = Inf,
+    label = "A",
+    hjust = -0.7,
+    vjust = 1.5,
+    fontface = "bold",
+    size = 6
+  )
+
+pB_pcoa <- p_pcoa_bray_all +
+  labs(title = NULL) +
+  theme(legend.position = "none") +
+  annotate(
+    "text",
+    x = -Inf,
+    y = Inf,
+    label = "B",
+    hjust = -0.7,
+    vjust = 1.5,
+    fontface = "bold",
+    size = 6
+  )
+
+p_pcoa_combined <- cowplot::plot_grid(
+  pA_pcoa,
+  pB_pcoa,
+  nrow = 1,
+  labels = NULL,
+  align = "hv",
+  rel_widths = c(1, 1.25)
+)
+
+p_pcoa_combined
+
+ggsave(
+  "PCoA_Bray_Curtis_singles_and_all.png",
+  plot = p_pcoa_combined,
+  width = 12,
+  height = 5,
+  dpi = 300
+)
 ```
 
 ```{r, message=FALSE, warning=FALSE}
@@ -787,6 +1012,1000 @@ ggsave(
   dpi = 300
 )
 ```
+
+#new abundant ASVs analysis, uses objects from previous chunks
+```{r dominant-asv-abundance-across-complexity, message=FALSE, warning=FALSE}
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+## ------------------------------------------------------------
+## 1. Focal dominant ASVs
+## ------------------------------------------------------------
+
+focal_asvs <- c("ASV_1", "ASV_2", "ASV_9", "ASV_10")
+
+## Taxonomic labels for the figure
+focal_taxonomy <- asv_context_summary_tax %>%
+  select(ASV, Genus) %>%
+  distinct() %>%
+  left_join(asv_ids, by = "ASV") %>%
+  filter(ASV_ID %in% focal_asvs) %>%
+  mutate(
+    ASV_number = as.numeric(sub("ASV_", "", ASV_ID))
+  ) %>%
+  arrange(ASV_number) %>%
+  mutate(
+    ASV_label = paste0(ASV_ID, " (", Genus, ")")
+  ) %>%
+  select(ASV, ASV_ID, Genus, ASV_label)
+
+print(focal_taxonomy)
+
+## ------------------------------------------------------------
+## 2. Define the source communities of each focal ASV
+## ------------------------------------------------------------
+
+## A single-inoculum community is considered a source when the
+## ASV has a mean relative abundance of at least 0.1% across its
+## replicate samples. This follows the source-definition criterion
+## used elsewhere in the manuscript.
+
+focal_source_communities <- asv_long %>%
+  left_join(asv_ids, by = "ASV") %>%
+  filter(
+    ASV_ID %in% focal_asvs,
+    nchar(Componentes) == 1
+  ) %>%
+  group_by(ASV_ID, Componentes) %>%
+  summarise(
+    mean_single_abundance = mean(rel_abundance),
+    .groups = "drop"
+  ) %>%
+  filter(mean_single_abundance >= 0.001) %>%
+  group_by(ASV_ID) %>%
+  summarise(
+    source_communities = paste(Componentes, collapse = ""),
+    source_list = list(Componentes),
+    .groups = "drop"
+  )
+
+print(focal_source_communities)
+
+## ------------------------------------------------------------
+## 3. Abundance in eligible inoculum combinations
+## ------------------------------------------------------------
+
+## A combination is eligible when it contains at least one source
+## community in which the focal ASV met the criterion above.
+
+focal_asv_eligible_samples <- asv_long %>%
+  left_join(asv_ids, by = "ASV") %>%
+  filter(ASV_ID %in% focal_asvs) %>%
+  left_join(focal_source_communities, by = "ASV_ID") %>%
+  rowwise() %>%
+  mutate(
+    eligible = any(
+      unlist(source_list) %in%
+        strsplit(as.character(Componentes), "")[[1]]
+    )
+  ) %>%
+  ungroup() %>%
+  filter(eligible) %>%
+  mutate(
+    Complexity = case_when(
+      nchar(Componentes) == 1 ~ "Single",
+      nchar(Componentes) == 2 ~ "Pair",
+      nchar(Componentes) == 3 ~ "Triplet",
+      TRUE ~ NA_character_
+    ),
+    Complexity = factor(
+      Complexity,
+      levels = c("Single", "Pair", "Triplet")
+    )
+  ) %>%
+  filter(!is.na(Complexity))
+
+## ------------------------------------------------------------
+## 4. Average replicates within each inoculum combination
+## ------------------------------------------------------------
+
+focal_asv_treatment_means <- focal_asv_eligible_samples %>%
+  group_by(
+    ASV,
+    ASV_ID,
+    Componentes,
+    Complexity
+  ) %>%
+  summarise(
+    n_replicates = n(),
+    mean_relative_abundance = mean(rel_abundance),
+    sd_relative_abundance = sd(rel_abundance),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    focal_taxonomy %>%
+      select(ASV, ASV_ID, Genus, ASV_label),
+    by = c("ASV", "ASV_ID")
+  ) %>%
+  mutate(
+    ASV_label = factor(
+      ASV_label,
+      levels = focal_taxonomy$ASV_label
+    )
+  )
+
+print(
+  focal_asv_treatment_means %>%
+    arrange(ASV_ID, Complexity, Componentes),
+  n = Inf
+)
+
+## ------------------------------------------------------------
+## 5. Descriptive summary by complexity class
+## ------------------------------------------------------------
+
+focal_asv_complexity_summary <- focal_asv_treatment_means %>%
+  group_by(
+    ASV_ID,
+    Genus,
+    ASV_label,
+    Complexity
+  ) %>%
+  summarise(
+    n_combinations = n(),
+    median_abundance = median(mean_relative_abundance),
+    q1_abundance = quantile(mean_relative_abundance, 0.25),
+    q3_abundance = quantile(mean_relative_abundance, 0.75),
+    mean_abundance = mean(mean_relative_abundance),
+    .groups = "drop"
+  )
+
+print(focal_asv_complexity_summary, n = Inf)
+
+## ------------------------------------------------------------
+## 6. Supplementary Figure S25A
+## ------------------------------------------------------------
+
+complexity_colors <- c(
+  "Single"  = "#1b9e77",
+  "Pair"    = "#d95f02",
+  "Triplet" = "#7570b3"
+)
+
+p_dominant_asv_complexity <- ggplot(
+  focal_asv_treatment_means,
+  aes(
+    x = Complexity,
+    y = mean_relative_abundance,
+    fill = Complexity,
+    color = Complexity
+  )
+) +
+  geom_boxplot(
+    width = 0.60,
+    alpha = 0.25,
+    outlier.shape = NA
+  ) +
+  geom_jitter(
+    width = 0.12,
+    height = 0,
+    size = 2,
+    alpha = 0.80
+  ) +
+  facet_wrap(
+    ~ ASV_label,
+    nrow = 1,
+    scales = "free_y"
+  ) +
+  scale_fill_manual(
+    values = complexity_colors,
+    drop = FALSE
+  ) +
+  scale_color_manual(
+    values = complexity_colors,
+    drop = FALSE
+  ) +
+  scale_y_continuous(
+    labels = label_percent(accuracy = 1)
+  ) +
+  labs(
+    x = "Inoculum complexity",
+    y = "Mean relative abundance per inoculum combination",
+    fill = "Complexity",
+    color = "Complexity"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(fill = "white"),
+    strip.text = element_text(face = "bold")
+  )
+
+p_dominant_asv_complexity
+
+ggsave(
+  "Figure_S25A_dominant_ASVs_across_inoculum_complexity.png",
+  plot = p_dominant_asv_complexity,
+  width = 12,
+  height = 4,
+  dpi = 300
+)
+
+## ------------------------------------------------------------
+## 7. Save underlying values
+## ------------------------------------------------------------
+
+write.csv(
+  focal_asv_treatment_means,
+  "Figure_S25A_dominant_ASV_treatment_means.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  focal_asv_complexity_summary,
+  "Figure_S25A_dominant_ASV_summary_by_complexity.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  focal_source_communities %>%
+    select(-source_list),
+  "Figure_S25A_dominant_ASV_source_communities.csv",
+  row.names = FALSE
+)
+```
+
+```
+
+#4-panel nmds colored by abundant ASV
+
+```{r dominant-asv-abundance-global-nmds, message=FALSE, warning=FALSE}
+
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(scales)
+library(viridis)
+
+## ------------------------------------------------------------
+## 1. Recover the coordinates of the global NMDS used in Fig. 5B
+## ------------------------------------------------------------
+
+nmds_coordinates_all <- ord_df_all
+
+## plot_ordination() normally retains sample names as row names.
+## Convert them explicitly into a SampleID column if necessary.
+
+if (!"SampleID" %in% colnames(nmds_coordinates_all)) {
+  nmds_coordinates_all <- nmds_coordinates_all %>%
+    rownames_to_column("SampleID")
+}
+
+## Check that every sample in the NMDS has a unique identifier
+stopifnot(
+  !anyDuplicated(nmds_coordinates_all$SampleID)
+)
+
+## ------------------------------------------------------------
+## 2. Abundance of each focal ASV in every sample
+## ------------------------------------------------------------
+
+focal_asv_nmds_data <- asv_long %>%
+  left_join(
+    asv_ids,
+    by = "ASV"
+  ) %>%
+  filter(
+    ASV_ID %in% focal_asvs
+  ) %>%
+  left_join(
+    focal_taxonomy %>%
+      select(ASV, ASV_ID, Genus, ASV_label),
+    by = c("ASV", "ASV_ID")
+  ) %>%
+  select(
+    SampleID,
+    Componentes,
+    ASV_ID,
+    Genus,
+    ASV_label,
+    rel_abundance
+  ) %>%
+  left_join(
+    nmds_coordinates_all %>%
+      select(
+        SampleID,
+        NMDS1,
+        NMDS2
+      ),
+    by = "SampleID"
+  ) %>%
+  mutate(
+    ASV_number = as.numeric(
+      sub("ASV_", "", ASV_ID)
+    ),
+    ASV_label = factor(
+      ASV_label,
+      levels = focal_taxonomy$ASV_label
+    )
+  )
+
+## ------------------------------------------------------------
+## 3. Quality checks
+## ------------------------------------------------------------
+
+## Every focal ASV should have one value for every NMDS sample
+print(
+  focal_asv_nmds_data %>%
+    count(ASV_ID, name = "n_samples")
+)
+
+print(
+  paste(
+    "Number of samples in global NMDS:",
+    nrow(nmds_coordinates_all)
+  )
+)
+
+## No missing NMDS coordinates should remain
+stopifnot(
+  !anyNA(focal_asv_nmds_data$NMDS1),
+  !anyNA(focal_asv_nmds_data$NMDS2)
+)
+
+## Inspect abundance ranges
+print(
+  focal_asv_nmds_data %>%
+    group_by(ASV_ID, Genus) %>%
+    summarise(
+      minimum = min(rel_abundance),
+      median = median(rel_abundance),
+      maximum = max(rel_abundance),
+      .groups = "drop"
+    )
+)
+
+## ------------------------------------------------------------
+## 4. Supplementary Figure S25B: 2 × 2 panels
+##    Independent color scale and legend for each ASV
+## ------------------------------------------------------------
+
+library(patchwork)
+
+## Preserve the desired ASV order
+focal_asv_order <- c(
+  "ASV_1",
+  "ASV_2",
+  "ASV_9",
+  "ASV_10"
+)
+
+## Function generating one NMDS panel per ASV
+make_asv_nmds_panel <- function(current_asv) {
+
+  panel_data <- focal_asv_nmds_data %>%
+    filter(ASV_ID == current_asv)
+
+  panel_title <- unique(
+    as.character(panel_data$ASV_label)
+  )
+
+  ggplot(
+    panel_data,
+    aes(
+      x = NMDS1,
+      y = NMDS2,
+      color = rel_abundance
+    )
+  ) +
+    geom_point(
+      size = 2.5,
+      alpha = 0.90
+    ) +
+    scale_color_viridis_c(
+      option = "magma",
+      direction = -1,
+      trans = "sqrt",
+      limits = range(
+        panel_data$rel_abundance,
+        na.rm = TRUE
+      ),
+      labels = label_percent(accuracy = 1),
+      name = "Relative\nabundance"
+    ) +
+    coord_equal() +
+    labs(
+      title = panel_title,
+      x = "NMDS1",
+      y = "NMDS2"
+    ) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(
+        face = "bold",
+        hjust = 0.5,
+        size = 11
+      ),
+      legend.position = "right",
+      legend.title = element_text(size = 8),
+      legend.text = element_text(size = 7)
+    )
+}
+
+## Generate the four independent plots
+dominant_asv_nmds_panels <- lapply(
+  focal_asv_order,
+  make_asv_nmds_panel
+)
+
+## Combine as a 2 × 2 figure.
+## Each panel retains its own abundance scale and legend.
+p_dominant_asv_nmds <- wrap_plots(
+  dominant_asv_nmds_panels,
+  ncol = 2,
+  nrow = 2,
+  guides = "keep"
+) +
+  plot_annotation(
+    tag_levels = "A"
+  )
+
+p_dominant_asv_nmds
+
+ggsave(
+  "Figure_S25B_dominant_ASV_abundance_global_NMDS.png",
+  plot = p_dominant_asv_nmds,
+  width = 11,
+  height = 8,
+  dpi = 300
+)
+
+## ------------------------------------------------------------
+## 5. Save underlying data
+## ------------------------------------------------------------
+
+write.csv(
+  focal_asv_nmds_data,
+  "Figure_S25B_dominant_ASV_abundance_global_NMDS.csv",
+  row.names = FALSE
+)
+```
+
+#Abundant ASV analysis on dominance results
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(scales)
+library(patchwork)
+
+## ============================================================
+## 1. Qualitative outcomes used in the dominance network
+## ============================================================
+
+txt <- c(
+  "A gana a C",
+  "D gana a A",
+  "E gana a A",
+  "F gana a A",
+  "A gana a G",
+  "A empata con H",
+  "D gana a C",
+  "E gana a C",
+  "F gana a C",
+  "C empata con G",
+  "H gana a C",
+  "E gana a D",
+  "D gana a F",
+  "D gana a G",
+  "D empata con H",
+  "E gana a F",
+  "E gana a G",
+  "E gana a H",
+  "F gana a G",
+  "F empata con H",
+  "H gana a G"
+)
+
+community_order <- c(
+  "A", "C", "D", "E", "F", "G", "H"
+)
+
+parse_dominance_outcome <- function(current_text) {
+
+  if (str_detect(current_text, "gana a")) {
+
+    parsed <- str_match(
+      current_text,
+      "^([A-Z]) gana a ([A-Z])$"
+    )
+
+    winner <- parsed[, 2]
+    loser  <- parsed[, 3]
+
+    pair_members <- community_order[
+      community_order %in% c(winner, loser)
+    ]
+
+    data.frame(
+      Original_text = current_text,
+      Pair = paste0(pair_members, collapse = ""),
+      Community_1 = pair_members[1],
+      Community_2 = pair_members[2],
+      Outcome = "Dominance",
+      Winner = winner,
+      Loser = loser,
+      stringsAsFactors = FALSE
+    )
+
+  } else if (str_detect(current_text, "empata con")) {
+
+    parsed <- str_match(
+      current_text,
+      "^([A-Z]) empata con ([A-Z])$"
+    )
+
+    pair_members <- community_order[
+      community_order %in% c(parsed[, 2], parsed[, 3])
+    ]
+
+    data.frame(
+      Original_text = current_text,
+      Pair = paste0(pair_members, collapse = ""),
+      Community_1 = pair_members[1],
+      Community_2 = pair_members[2],
+      Outcome = "No clear dominance",
+      Winner = NA_character_,
+      Loser = NA_character_,
+      stringsAsFactors = FALSE
+    )
+
+  } else {
+
+    stop(
+      paste(
+        "Unrecognized dominance description:",
+        current_text
+      )
+    )
+  }
+}
+
+dominance_outcomes <- bind_rows(
+  lapply(
+    txt,
+    parse_dominance_outcome
+  )
+) %>%
+  mutate(
+    Pair_order = row_number()
+  )
+
+print(dominance_outcomes, n = Inf)
+
+stopifnot(
+  nrow(dominance_outcomes) == 21,
+  !anyDuplicated(dominance_outcomes$Pair)
+)
+
+## ============================================================
+## 2. Mean abundance of focal ASVs in singles and pairs
+## ============================================================
+
+focal_asv_pair_means <- asv_long %>%
+  left_join(
+    asv_ids,
+    by = "ASV"
+  ) %>%
+  filter(
+    ASV_ID %in% focal_asvs,
+    nchar(as.character(Componentes)) %in% c(1, 2)
+  ) %>%
+  group_by(
+    ASV,
+    ASV_ID,
+    Componentes
+  ) %>%
+  summarise(
+    n_replicates = n(),
+    mean_relative_abundance = mean(
+      rel_abundance,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+## ============================================================
+## 3. One row per pair × focal ASV
+## ============================================================
+
+dominant_asv_pair_dynamics <- tidyr::crossing(
+  dominance_outcomes,
+  ASV_ID = focal_asvs
+) %>%
+  left_join(
+    focal_asv_pair_means %>%
+      select(
+        ASV_ID,
+        Componentes,
+        Pair_abundance = mean_relative_abundance
+      ),
+    by = c(
+      "ASV_ID",
+      "Pair" = "Componentes"
+    )
+  ) %>%
+  left_join(
+    focal_asv_pair_means %>%
+      select(
+        ASV_ID,
+        Componentes,
+        Community_1_abundance = mean_relative_abundance
+      ),
+    by = c(
+      "ASV_ID",
+      "Community_1" = "Componentes"
+    )
+  ) %>%
+  left_join(
+    focal_asv_pair_means %>%
+      select(
+        ASV_ID,
+        Componentes,
+        Community_2_abundance = mean_relative_abundance
+      ),
+    by = c(
+      "ASV_ID",
+      "Community_2" = "Componentes"
+    )
+  ) %>%
+  mutate(
+    Source_mean_abundance =
+      (
+        Community_1_abundance +
+        Community_2_abundance
+      ) / 2,
+
+    ## Change in the pair relative to the mean abundance
+    ## observed in its two corresponding singles
+    Delta_from_source_mean =
+      Pair_abundance -
+      Source_mean_abundance,
+
+    Winner_abundance = case_when(
+      Outcome == "Dominance" &
+        Winner == Community_1 ~
+        Community_1_abundance,
+
+      Outcome == "Dominance" &
+        Winner == Community_2 ~
+        Community_2_abundance,
+
+      TRUE ~ NA_real_
+    ),
+
+    Loser_abundance = case_when(
+      Outcome == "Dominance" &
+        Loser == Community_1 ~
+        Community_1_abundance,
+
+      Outcome == "Dominance" &
+        Loser == Community_2 ~
+        Community_2_abundance,
+
+      TRUE ~ NA_real_
+    ),
+
+    Winner_minus_loser =
+      Winner_abundance -
+      Loser_abundance,
+
+    Source_concordance = case_when(
+      Outcome == "No clear dominance" ~
+        "No clear dominance",
+
+      Winner_abundance > Loser_abundance ~
+        "Winner-enriched",
+
+      Winner_abundance < Loser_abundance ~
+        "Loser-enriched",
+
+      Winner_abundance == Loser_abundance ~
+        "Equal",
+
+      TRUE ~ NA_character_
+    ),
+
+    Cell_label = case_when(
+      Source_concordance == "Winner-enriched" ~ "W",
+      Source_concordance == "Loser-enriched" ~ "L",
+      Source_concordance == "Equal" ~ "=",
+      Source_concordance == "No clear dominance" ~ "–",
+      TRUE ~ ""
+    )
+  ) %>%
+  left_join(
+    focal_taxonomy %>%
+      select(
+        ASV_ID,
+        Genus,
+        ASV_label
+      ) %>%
+      distinct(),
+    by = "ASV_ID"
+  )
+
+## Check for missing abundance values
+stopifnot(
+  !anyNA(
+    dominant_asv_pair_dynamics$Pair_abundance
+  ),
+  !anyNA(
+    dominant_asv_pair_dynamics$Community_1_abundance
+  ),
+  !anyNA(
+    dominant_asv_pair_dynamics$Community_2_abundance
+  )
+)
+
+print(
+  dominant_asv_pair_dynamics %>%
+    select(
+      Pair,
+      Outcome,
+      Winner,
+      Loser,
+      ASV_ID,
+      Community_1_abundance,
+      Community_2_abundance,
+      Pair_abundance,
+      Delta_from_source_mean,
+      Source_concordance
+    ),
+  n = Inf
+)
+
+## ============================================================
+## 4. Descriptive concordance summary
+## ============================================================
+
+dominance_asv_concordance_summary <-
+  dominant_asv_pair_dynamics %>%
+  filter(
+    Outcome == "Dominance"
+  ) %>%
+  group_by(
+    ASV_ID,
+    Genus
+  ) %>%
+  summarise(
+    n_dominance_comparisons = n(),
+
+    n_winner_enriched = sum(
+      Source_concordance == "Winner-enriched"
+    ),
+
+    n_loser_enriched = sum(
+      Source_concordance == "Loser-enriched"
+    ),
+
+    n_equal = sum(
+      Source_concordance == "Equal"
+    ),
+
+    proportion_winner_enriched =
+      n_winner_enriched /
+      n_dominance_comparisons,
+
+    median_winner_minus_loser =
+      median(
+        Winner_minus_loser,
+        na.rm = TRUE
+      ),
+
+    median_delta_in_pair =
+      median(
+        Delta_from_source_mean,
+        na.rm = TRUE
+      ),
+
+    .groups = "drop"
+  )
+
+print(
+  dominance_asv_concordance_summary,
+  n = Inf
+)
+
+## ============================================================
+## 5. Labels and ordering for Figure S25C
+## ============================================================
+
+pair_plot_labels <- dominance_outcomes %>%
+  mutate(
+    Pair_label = case_when(
+      Outcome == "Dominance" ~
+        paste0(Pair, ": ", Winner, " > ", Loser),
+
+      Outcome == "No clear dominance" ~
+        paste0(Pair, ": no clear dominance")
+    )
+  ) %>%
+  select(
+    Pair,
+    Pair_label,
+    Pair_order
+  )
+
+dominant_asv_pair_dynamics <-
+  dominant_asv_pair_dynamics %>%
+  left_join(
+    pair_plot_labels,
+    by = c(
+      "Pair",
+      "Pair_order"
+    )
+  ) %>%
+  mutate(
+    Pair_label = factor(
+      Pair_label,
+      levels = rev(
+        pair_plot_labels$Pair_label
+      )
+    )
+  )
+
+## ============================================================
+## 6. Figure S25C
+##    Independent heatmap scale for each ASV
+## ============================================================
+
+make_dominance_heatmap <- function(current_asv) {
+
+  panel_data <- dominant_asv_pair_dynamics %>%
+    filter(
+      ASV_ID == current_asv
+    )
+
+  panel_limit <- max(
+    abs(panel_data$Delta_from_source_mean),
+    na.rm = TRUE
+  )
+
+  ## Avoid a zero-width color scale
+  if (
+    !is.finite(panel_limit) ||
+    panel_limit == 0
+  ) {
+    panel_limit <- 0.001
+  }
+
+  panel_title <- unique(
+    panel_data$ASV_label
+  )
+
+  ggplot(
+    panel_data,
+    aes(
+      x = ASV_ID,
+      y = Pair_label,
+      fill = Delta_from_source_mean
+    )
+  ) +
+    geom_tile(
+      color = "white",
+      linewidth = 0.4
+    ) +
+    geom_text(
+      aes(label = Cell_label),
+      size = 3.5,
+      fontface = "bold"
+    ) +
+    scale_fill_gradient2(
+      low = "#2166AC",
+      mid = "white",
+      high = "#B2182B",
+      midpoint = 0,
+      limits = c(
+        -panel_limit,
+        panel_limit
+      ),
+      labels = label_percent(
+        accuracy = 1
+      ),
+      name = paste0(
+        "\u0394 abundance\n",
+        "pair − source mean"
+      )
+    ) +
+    labs(
+      title = panel_title,
+      x = NULL,
+      y = NULL
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      plot.title = element_text(
+        face = "bold",
+        hjust = 0.5,
+        size = 10
+      ),
+      legend.position = "right",
+      legend.title = element_text(size = 8),
+      legend.text = element_text(size = 7),
+      panel.grid = element_blank()
+    )
+}
+
+dominance_heatmap_panels <- lapply(
+  focal_asvs,
+  make_dominance_heatmap
+)
+
+p_dominant_asv_network <- wrap_plots(
+  dominance_heatmap_panels,
+  ncol = 4,
+  guides = "keep"
+) +
+  plot_annotation(
+    title = paste0(
+      "Dominant-ASV abundance changes across ",
+      "pairwise coalescence outcomes"
+    ),
+    subtitle = paste0(
+      "W: ASV more abundant in the inferred winner single; ",
+      "L: more abundant in the loser single; ",
+      "–: no clear dominance"
+    )
+  )
+
+p_dominant_asv_network
+
+ggsave(
+  "Figure_S25C_dominant_ASVs_and_dominance_outcomes.png",
+  plot = p_dominant_asv_network,
+  width = 14,
+  height = 9,
+  dpi = 300
+)
+
+## ============================================================
+## 7. Save results
+## ============================================================
+
+write.csv(
+  dominance_outcomes,
+  "dominance_outcomes_21_pairs.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  dominant_asv_pair_dynamics,
+  "Figure_S25C_dominant_ASV_pair_dynamics.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  dominance_asv_concordance_summary,
+  "Figure_S25C_dominance_ASV_concordance_summary.csv",
+  row.names = FALSE
+)
+
+saveRDS(
+  dominance_outcomes,
+  "dominance_outcomes_21_pairs.rds"
+)
+```
+
+
 
 ```{r dominant-asv-neighbourhood-family-and-genus-ranks-2-19, message=FALSE, warning=FALSE}
 
@@ -1144,11 +2363,11 @@ ggsave(
 
 ```
 
-### Distance to the compositional Bray–Curtis centroid
 
-This chunk defines the global rhizosphere attractor as the mean compositional profile across all samples. Bray–Curtis distances are then calculated from each sample to this compositional centroid. Pair and triplet communities are shown as density distributions, while each single inoculum is represented by its letter positioned at its mean distance to the centroid.
+ ### Distance to the compositional Bray–Curtis centroid.
+ 
 
-```{r}
+```{r balanced-loto-centroid}
 library(phyloseq)
 library(dplyr)
 library(tibble)
@@ -1156,123 +2375,272 @@ library(ggplot2)
 library(vegan)
 
 ## ------------------------------------------------------------
-## 1. Extract ASV abundance matrix
+## 1. Relative-abundance matrix
 ## ------------------------------------------------------------
 
 otu_mat <- as(otu_table(ps), "matrix")
 
-## Samples as rows, ASVs as columns
 if (taxa_are_rows(ps)) {
   otu_mat <- t(otu_mat)
 }
 
-## Convert to relative abundance, just to be explicit
-otu_rel <- sweep(otu_mat, 1, rowSums(otu_mat), "/")
+## Remove samples with no reads, if any
+otu_mat <- otu_mat[rowSums(otu_mat) > 0, , drop = FALSE]
 
-## ------------------------------------------------------------
-## 2. Define compositional centroid
-## ------------------------------------------------------------
-## The centroid is the mean relative abundance profile across all samples.
-
-centroid_profile <- colMeans(otu_rel)
-
-## Add centroid as an extra pseudo-sample
-otu_rel_with_centroid <- rbind(
-  otu_rel,
-  Global_centroid = centroid_profile
+## Convert each sample to relative abundances
+otu_rel <- sweep(
+  otu_mat,
+  1,
+  rowSums(otu_mat),
+  "/"
 )
 
 ## ------------------------------------------------------------
-## 3. Bray-Curtis distances to centroid
+## 2. Metadata and complexity class
 ## ------------------------------------------------------------
 
-bray_to_centroid <- vegan::vegdist(
-  otu_rel_with_centroid,
-  method = "bray"
-)
-
-bray_centroid_mat <- as.matrix(bray_to_centroid)
-
-distance_to_centroid <- bray_centroid_mat[
-  rownames(otu_rel),
-  "Global_centroid"
-]
-
-## ------------------------------------------------------------
-## 4. Metadata + distance to centroid
-## ------------------------------------------------------------
-
-metadata_centroid <- data.frame(sample_data(ps)) %>%
+metadata_loto <- data.frame(sample_data(ps)) %>%
   rownames_to_column("SampleID") %>%
   mutate(
+    Treatment = as.character(Componentes),
     Complexity = case_when(
-      nchar(Componentes) == 1 ~ "Single",
-      nchar(Componentes) == 2 ~ "Pair",
-      nchar(Componentes) == 3 ~ "Triplet",
+      nchar(Treatment) == 1 ~ "Single",
+      nchar(Treatment) == 2 ~ "Pair",
+      nchar(Treatment) == 3 ~ "Triplet",
       TRUE ~ NA_character_
     ),
-    Complexity = factor(Complexity, levels = c("Single", "Pair", "Triplet")),
-    distance_to_centroid = distance_to_centroid[SampleID]
+    Complexity = factor(
+      Complexity,
+      levels = c("Single", "Pair", "Triplet")
+    )
+  ) %>%
+  filter(
+    !is.na(Complexity),
+    SampleID %in% rownames(otu_rel)
   )
 
-save(metadata_centroid, file = "metadata_centroid.RData")
+## Arrange metadata in the same order as the abundance matrix
+metadata_loto <- metadata_loto[
+  match(rownames(otu_rel), metadata_loto$SampleID),
+  ,
+  drop = FALSE
+]
+
+stopifnot(
+  identical(
+    rownames(otu_rel),
+    metadata_loto$SampleID
+  )
+)
+
 ## ------------------------------------------------------------
-## 5. Mean distance of each single inoculum
+## 3. Mean composition of each treatment combination
 ## ------------------------------------------------------------
 
-single_mean_distances <- metadata_centroid %>%
-  filter(Complexity == "Single") %>%
-  group_by(Componentes) %>%
+treatment_ids <- unique(metadata_loto$Treatment)
+
+treatment_mean_composition <- do.call(
+  rbind,
+  lapply(treatment_ids, function(current_treatment) {
+
+    treatment_samples <- metadata_loto$SampleID[
+      metadata_loto$Treatment == current_treatment
+    ]
+
+    colMeans(
+      otu_rel[treatment_samples, , drop = FALSE],
+      na.rm = TRUE
+    )
+  })
+)
+
+rownames(treatment_mean_composition) <- treatment_ids
+
+## One metadata row per treatment combination
+treatment_metadata <- metadata_loto %>%
+  distinct(Treatment, Complexity) %>%
+  arrange(
+    match(
+      Treatment,
+      rownames(treatment_mean_composition)
+    )
+  )
+
+stopifnot(
+  identical(
+    treatment_metadata$Treatment,
+    rownames(treatment_mean_composition)
+  )
+)
+
+## Check the expected number of treatment combinations:
+## 7 singles, 21 pairs and 35 triplets
+print(table(treatment_metadata$Complexity))
+
+## ------------------------------------------------------------
+## 4. Balanced leave-one-treatment-out centroid
+## ------------------------------------------------------------
+
+calculate_loto_distance <- function(treatment_to_test) {
+
+  tested_class <- as.character(
+    treatment_metadata$Complexity[
+      treatment_metadata$Treatment == treatment_to_test
+    ]
+  )
+
+  ## Calculate one centroid for each complexity class.
+  ## The tested treatment is excluded from its own class.
+  class_centroids <- lapply(
+    levels(treatment_metadata$Complexity),
+    function(current_class) {
+
+      class_treatments <- treatment_metadata$Treatment[
+        treatment_metadata$Complexity == current_class
+      ]
+
+      if (current_class == tested_class) {
+        class_treatments <- setdiff(
+          class_treatments,
+          treatment_to_test
+        )
+      }
+
+      if (length(class_treatments) == 0) {
+        stop(
+          paste(
+            "No treatments remain in class",
+            current_class,
+            "after leave-one-treatment-out exclusion."
+          )
+        )
+      }
+
+      ## Equal weight for every treatment within the class
+      colMeans(
+        treatment_mean_composition[
+          class_treatments,
+          ,
+          drop = FALSE
+        ],
+        na.rm = TRUE
+      )
+    }
+  )
+
+  ## Equal weight for Single, Pair and Triplet:
+  ## each class contributes one third to the reference centroid
+  balanced_loto_centroid <- Reduce(
+    "+",
+    class_centroids
+  ) / length(class_centroids)
+
+  ## Bray-Curtis distance between the held-out treatment mean
+  ## and its independently calculated balanced centroid
+  as.numeric(
+    vegan::vegdist(
+      rbind(
+        Held_out_treatment =
+          treatment_mean_composition[
+            treatment_to_test,
+            ,
+            drop = FALSE
+          ],
+        Balanced_LOTO_centroid =
+          balanced_loto_centroid
+      ),
+      method = "bray"
+    )
+  )
+}
+
+treatment_metadata$distance_to_balanced_loto_centroid <- vapply(
+  treatment_metadata$Treatment,
+  calculate_loto_distance,
+  numeric(1)
+)
+
+## ------------------------------------------------------------
+## 5. Inspect and save treatment-level results
+## ------------------------------------------------------------
+
+print(treatment_metadata)
+
+summary_by_complexity <- treatment_metadata %>%
+  group_by(Complexity) %>%
   summarise(
-    mean_distance_to_centroid = mean(distance_to_centroid, na.rm = TRUE),
+    n_treatments = n(),
+    mean_distance =
+      mean(distance_to_balanced_loto_centroid),
+    median_distance =
+      median(distance_to_balanced_loto_centroid),
+    sd_distance =
+      sd(distance_to_balanced_loto_centroid),
     .groups = "drop"
   )
 
-print(single_mean_distances)
+print(summary_by_complexity)
+
+write.csv(
+  treatment_metadata,
+  "balanced_LOTO_centroid_distances_by_treatment.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  summary_by_complexity,
+  "balanced_LOTO_centroid_summary_by_complexity.csv",
+  row.names = FALSE
+)
+
+save(
+  treatment_metadata,
+  treatment_mean_composition,
+  summary_by_complexity,
+  file = "balanced_LOTO_centroid_analysis.RData"
+)
 
 ## ------------------------------------------------------------
-## 6. Plot
+## 6. Density plot for all three complexity classes
 ## ------------------------------------------------------------
 
-p_centroid_distance <- ggplot() +
+complexity_colors <- c(
+  "Single"  = "#1b9e77",
+  "Pair"    = "#d95f02",
+  "Triplet" = "#7570b3"
+)
+
+p_balanced_loto_centroid <- ggplot(
+  treatment_metadata,
+  aes(
+    x = distance_to_balanced_loto_centroid,
+    fill = Complexity,
+    color = Complexity
+  )
+) +
   geom_density(
-    data = metadata_centroid %>%
-      filter(Complexity %in% c("Pair", "Triplet")),
-    aes(
-      x = distance_to_centroid,
-      fill = Complexity,
-      color = Complexity
-    ),
     alpha = 0.25,
-    linewidth = 0.8
+    linewidth = 0.8,
+    adjust = 1
   ) +
-  geom_text(
-    data = single_mean_distances,
-    aes(
-      x = mean_distance_to_centroid,
-      y = 3,
-      label = Componentes
-    ),
-    size = 5,
-    fontface = "bold"
+  scale_color_manual(
+    values = complexity_colors,
+    drop = FALSE
   ) +
-scale_color_manual(values = c(
-  "Pair" = "#d95f02",
-  "Triplet" = "#7570b3"
-)) +
-scale_fill_manual(values = c(
-  "Pair" = "#d95f02",
-  "Triplet" = "#7570b3"
-)) +
+  scale_fill_manual(
+    values = complexity_colors,
+    drop = FALSE
+  ) +
   labs(
-    x = "Bray-Curtis distance to compositional centroid",
+    x = paste0(
+      "Bray-Curtis distance to balanced ",
+      "leave-one-treatment-out centroid"
+    ),
     y = "Density",
-    #title = "Distance to the global rhizosphere compositional centroid",
-    #subtitle = "Pairs and triplets as density curves; single inocula shown as mean positions",
     color = "Complexity",
     fill = "Complexity"
   ) +
-theme_bw() +
+  theme_bw() +
   theme(
     legend.position = c(0.78, 0.80),
     legend.background = element_rect(
@@ -1281,16 +2649,20 @@ theme_bw() +
     )
   )
 
-p_centroid_distance
+p_balanced_loto_centroid
 
 ggsave(
-  "bray_curtis_distance_to_compositional_centroid.png",
-  plot = p_centroid_distance,
+  "bray_curtis_distance_to_balanced_LOTO_centroid.png",
+  plot = p_balanced_loto_centroid,
   width = 8,
   height = 6,
   dpi = 300
 )
 ```
+```
+ 
+
+
 
 
 ### ASV-level assembly trait space in 2D
